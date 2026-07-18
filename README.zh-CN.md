@@ -52,7 +52,7 @@ agent_shell = "git-bash"
 例如：
 
 ```bash
-"/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh" \
+"/h/tools/codex/bin/codex-gitbash.sh" \
   --dangerously-bypass-approvals-and-sandbox
 ```
 
