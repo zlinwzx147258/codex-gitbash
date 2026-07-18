@@ -59,15 +59,17 @@ agent_shell = "git-bash"
 不要直接运行 `codex-gitbash.exe`；应通过 `codex-gitbash.sh` 启动，确保 Git
 Bash 配置被正确传入。
 
-### 在当前 Git Bash 会话中直接输入 `codex`
+### 教程：手动让当前 Git Bash 会话直接输入 `codex`
 
-执行下面这行后，当前 Git Bash 窗口即可直接使用自定义 Git Bash 版本：
+> **这只是操作教程，不会自动配置。** 本仓库、文档和 `codex-gitbash.sh` 都不会
+> 自动创建 alias，也不会修改你的 `~/.bashrc`。只有你自己在已经打开的 **Git Bash**
+> 窗口中手动复制并执行下面命令，当前窗口才会使用这个别名：
 
 ```bash
 alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'
 ```
 
-随后可像官方命令一样启动：
+手动执行后，才可以像官方命令一样启动：
 
 ```bash
 codex
@@ -75,8 +77,15 @@ codex
 codex --dangerously-bypass-approvals-and-sandbox
 ```
 
-`alias` 只对当前 Git Bash 会话有效；关闭窗口后会失效。如果希望以后每次打开
-Git Bash 都能直接输入 `codex`，执行一次下面的幂等写入命令：
+这个 alias 只作用于当前 Git Bash 窗口；关闭窗口后会自动失效，不会改动任何配置
+文件。如果想在关闭窗口前提前撤销它，执行：
+
+```bash
+unalias codex
+```
+
+如果你**自己决定**要让它在以后每次打开 Git Bash 时都生效，才手动复制并执行下面的
+可选命令，把 alias 写入 `~/.bashrc` 后重新加载。项目不会替你执行这一步：
 
 ```bash
 grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \

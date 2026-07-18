@@ -65,28 +65,36 @@ Arguments pass through unchanged:
 ./bin/codex-gitbash.sh --dangerously-bypass-approvals-and-sandbox
 ```
 
-### Optional `codex` alias on the maintained build machine
+### Tutorial: optional manual `codex` alias on the maintained build machine
 
-For the current Git Bash session, make `codex` invoke the local Git Bash
-launcher directly:
+> **This is a manual tutorial, not an installer.** The repository and launcher
+> never create this alias or modify `~/.bashrc`. In an already open Git Bash
+> window, you may choose to paste this command yourself:
 
 ```bash
 alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'
 ```
 
-The alias is temporary. To install it idempotently for future Git Bash
-sessions, append it to `~/.bashrc` only if it is not already present, then
-reload the file:
+Only after you manually run it do these invoke the custom build:
+
+```bash
+codex
+codex --dangerously-bypass-approvals-and-sandbox
+```
+
+The alias is temporary and disappears when that Git Bash window closes. To
+remove it earlier without changing files, run:
+
+```bash
+unalias codex
+```
+
+If you personally choose to persist it for future Git Bash sessions, manually
+run the following optional, idempotent command. The project does not run it for
+you:
 
 ```bash
 grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \
   || echo "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
 source ~/.bashrc
-```
-
-After either form, these use the custom build:
-
-```bash
-codex
-codex --dangerously-bypass-approvals-and-sandbox
 ```
