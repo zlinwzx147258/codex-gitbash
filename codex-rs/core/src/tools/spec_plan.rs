@@ -5,6 +5,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::mcp_tool_exposure::append_mcp_tools;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::shell::ShellType;
 use crate::tools::code_mode::default_exec_yield_time_override_ms;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
@@ -51,6 +52,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::shell_spec::WindowsShellKind;
 use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
@@ -62,6 +64,7 @@ use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::router::ToolRouter;
 use codex_extension_api::ExtensionData;
+use codex_config::types::WindowsAgentShellToml;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_protocol::account::PlanType;
@@ -682,6 +685,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                     turn_context,
                     context.environments,
                 ),
+                windows_shell_kind: windows_shell_kind(turn_context, context.environments),
             }));
             registry.add(WriteStdinHandler);
             registry.add(ViewImageHandler::new(ViewImageToolOptions {
@@ -715,6 +719,43 @@ fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironm
     ToolEnvironmentMode::from_count(environments.turn_environments().count())
 }
 
+fn windows_shell_kind(
+    turn_context: &TurnContext,
+    environments: &TurnEnvironmentSnapshot,
+) -> WindowsShellKind {
+    if !cfg!(windows) {
+        return WindowsShellKind::PowerShell;
+    }
+
+    let mut turn_environments = environments.turn_environments();
+    let Some(environment) = turn_environments.next() else {
+        return WindowsShellKind::EnvironmentDefault;
+    };
+    if turn_environments.next().is_some() {
+        return WindowsShellKind::EnvironmentDefault;
+    }
+
+    // Execution prefers a shell reported by the selected environment. Only
+    // advertise the session's configured shell when that fallback is the one
+    // that will actually execute the command.
+    if let Some(shell) = environment.shell.as_ref() {
+        return if shell.shell_type == ShellType::PowerShell {
+            WindowsShellKind::PowerShell
+        } else {
+            WindowsShellKind::EnvironmentDefault
+        };
+    }
+
+    if matches!(
+        turn_context.config.permissions.windows_agent_shell,
+        Some(WindowsAgentShellToml::GitBash)
+    ) {
+        WindowsShellKind::GitBash
+    } else {
+        WindowsShellKind::PowerShell
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
@@ -728,10 +769,12 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let supports_shell_command = context.environments.single_local_environment().is_some();
+    let windows_shell_kind = windows_shell_kind(turn_context, context.environments);
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
         allow_login_shell,
         exec_permission_approvals_enabled,
+        windows_shell_kind,
     };
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
@@ -744,6 +787,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
                     turn_context,
                     context.environments,
                 ),
+                windows_shell_kind,
             }));
             registry.add(WriteStdinHandler);
 
