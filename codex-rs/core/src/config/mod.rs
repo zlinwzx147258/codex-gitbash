@@ -4,6 +4,7 @@ use crate::path_utils::normalize_for_native_workdir;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
+use crate::windows_sandbox::resolve_windows_agent_shell;
 use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
 use codex_config::CloudConfigBundleLoader;
@@ -52,6 +53,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::WindowsAgentShellToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginLoadOutcome;
 use codex_core_plugins::PluginsConfigInput;
@@ -354,6 +356,8 @@ pub struct Permissions {
     /// Effective Windows sandbox mode derived from `[windows].sandbox` or
     /// legacy feature keys.
     pub windows_sandbox_mode: Option<WindowsSandboxModeToml>,
+    /// Preferred agent shell from `[windows].agent_shell`. `None` defaults to PowerShell.
+    pub windows_agent_shell: Option<WindowsAgentShellToml>,
     /// Whether the final Windows sandboxed child should run on a private desktop.
     pub windows_sandbox_private_desktop: bool,
 }
@@ -375,6 +379,7 @@ impl Permissions {
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
+            windows_agent_shell: None,
             windows_sandbox_private_desktop: true,
         })
     }
@@ -3198,6 +3203,7 @@ impl Config {
             configured_windows_sandbox_mode
         };
         let windows_sandbox_private_desktop = resolve_windows_sandbox_private_desktop(&cfg);
+        let windows_agent_shell = resolve_windows_agent_shell(&cfg);
         let resolved_cwd = AbsolutePathBuf::try_from(normalize_for_native_workdir({
             use std::env;
 
@@ -3917,6 +3923,7 @@ impl Config {
                 allow_login_shell,
                 shell_environment_policy,
                 windows_sandbox_mode,
+                windows_agent_shell,
                 windows_sandbox_private_desktop,
             },
             explicit_permission_profile_mode,

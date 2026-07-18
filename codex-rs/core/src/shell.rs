@@ -89,6 +89,12 @@ pub fn get_shell(shell_type: ShellType, path: Option<&PathBuf>) -> Option<Shell>
     codex_shell_command::shell_detect::get_shell(shell_type, path).map(Into::into)
 }
 
+/// Resolves the Git for Windows Bash executable without using a generic
+/// `bash` PATH lookup, which may otherwise resolve to WSL on Windows.
+pub fn git_bash_shell() -> Option<Shell> {
+    codex_shell_command::shell_detect::git_bash_shell().map(Into::into)
+}
+
 pub fn default_user_shell() -> Shell {
     codex_shell_command::shell_detect::default_user_shell().into()
 }

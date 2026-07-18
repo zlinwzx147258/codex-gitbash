@@ -28,6 +28,7 @@ use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use codex_tools::ToolSpec;
 
 use super::super::shell_spec::CommandToolOptions;
+use super::super::shell_spec::WindowsShellKind;
 use super::super::shell_spec::create_shell_command_tool;
 use super::RunExecLikeArgs;
 use super::run_exec_like;
@@ -49,6 +50,7 @@ pub(crate) struct ShellCommandHandlerOptions {
     pub(crate) backend_config: ShellCommandBackendConfig,
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
+    pub(crate) windows_shell_kind: WindowsShellKind,
 }
 
 impl ShellCommandHandler {
@@ -133,6 +135,7 @@ impl From<ShellCommandBackendConfig> for ShellCommandHandler {
             backend_config,
             allow_login_shell: false,
             exec_permission_approvals_enabled: false,
+            windows_shell_kind: WindowsShellKind::PowerShell,
         })
     }
 }
@@ -146,6 +149,7 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
         create_shell_command_tool(CommandToolOptions {
             allow_login_shell: self.options.allow_login_shell,
             exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+            windows_shell_kind: self.options.windows_shell_kind,
         })
     }
 

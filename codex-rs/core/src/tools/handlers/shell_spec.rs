@@ -6,9 +6,17 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowsShellKind {
+    PowerShell,
+    GitBash,
+    EnvironmentDefault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandToolOptions {
     pub allow_login_shell: bool,
     pub exec_permission_approvals_enabled: bool,
+    pub windows_shell_kind: WindowsShellKind,
 }
 
 #[cfg(test)]
@@ -62,7 +70,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         properties.insert(
             "shell".to_string(),
             JsonSchema::string(Some(
-                "Shell binary to launch. Defaults to the user's default shell.".to_string(),
+                "Shell binary to launch. Defaults to the selected environment's shell, or the configured session shell when the environment does not report one.".to_string(),
             )),
         );
     }
@@ -93,7 +101,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         description: if cfg!(windows) {
             format!(
                 "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
-                windows_shell_guidance()
+                windows_shell_guidance(options.windows_shell_kind)
             )
         } else {
             "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
@@ -159,7 +167,7 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
         (
             "command".to_string(),
             JsonSchema::string(Some(
-                "Shell script to run in the user's default shell.".to_string(),
+                "Shell script to run in the selected environment's shell.".to_string(),
             )),
         ),
         (
@@ -189,8 +197,9 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
     ));
 
     let description = if cfg!(windows) {
-        format!(
-            r#"Runs a Powershell command (Windows) and returns its output.
+        match options.windows_shell_kind {
+            WindowsShellKind::PowerShell => format!(
+                r#"Runs a Powershell command (Windows) and returns its output.
 
 Examples of valid command strings:
 
@@ -202,8 +211,32 @@ Examples of valid command strings:
 - running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -"
 
 {}"#,
-            windows_shell_guidance()
-        )
+                windows_shell_guidance(options.windows_shell_kind)
+            ),
+            WindowsShellKind::GitBash => format!(
+                r#"Runs a Git Bash command (Windows) and returns its output.
+
+Examples of valid command strings:
+
+- ls -a (show hidden): "ls -a"
+- recursive find by name: "find . -name '*.py'"
+- recursive grep: "grep -r 'TODO' ."
+- ps aux | grep python: "ps aux | grep python"
+- setting an env var: "export FOO='bar'; echo $FOO"
+- running an inline Python script: "python - <<'PY'\nprint('Hello, world!')\nPY"
+
+{}"#,
+                windows_shell_guidance(options.windows_shell_kind)
+            ),
+            WindowsShellKind::EnvironmentDefault => format!(
+                r#"Runs a command in the selected environment and returns its output.
+
+Use syntax that matches the selected environment's shell. Do not assume PowerShell or Git Bash when an environment-specific shell is reported or when multiple environments are available.
+
+{}"#,
+                windows_shell_guidance(options.windows_shell_kind)
+            ),
+        }
     } else {
         r#"Runs a shell command and returns its output.
 - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
@@ -402,11 +435,27 @@ fn file_system_permissions_schema() -> JsonSchema {
     schema
 }
 
-fn windows_shell_guidance() -> &'static str {
-    r#"Windows safety rules:
+fn windows_shell_guidance(kind: WindowsShellKind) -> &'static str {
+    match kind {
+        WindowsShellKind::PowerShell => {
+            r#"Windows safety rules:
 - Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
 - When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control."#
+        }
+        WindowsShellKind::GitBash => {
+            r#"Windows safety rules (Git Bash):
+- Use Bash commands end-to-end. Do not enumerate paths in Bash and then pass them to PowerShell, `cmd.exe`, batch builtins, or another shell for deletion or moving.
+- Before any recursive delete or move, resolve and verify the explicit target path remains inside the intended workspace or explicitly named target directory.
+- Prefer POSIX-style paths (for example `/c/Users/...`) when passing paths to Bash tools; use explicit paths when invoking Windows-native programs."#
+        }
+        WindowsShellKind::EnvironmentDefault => {
+            r#"Windows safety rules (environment-specific shell):
+- Use commands end-to-end in the selected environment's shell. Do not mix Bash, PowerShell, `cmd.exe`, or batch syntax unless that shell explicitly supports it.
+- Before any recursive delete or move, resolve and verify the explicit target path remains inside the intended workspace or explicitly named target directory.
+- When multiple environments are available, select the intended `environment_id` and match that environment's path and command conventions."#
+        }
+    }
 }
 
 #[cfg(test)]

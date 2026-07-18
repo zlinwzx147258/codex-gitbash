@@ -3,7 +3,10 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 fn windows_shell_guidance_description() -> String {
-    format!("\n\n{}", windows_shell_guidance())
+    format!(
+        "\n\n{}",
+        windows_shell_guidance(WindowsShellKind::PowerShell)
+    )
 }
 
 fn has_parameter(tool: &ToolSpec, parameter_name: &str) -> bool {
@@ -18,6 +21,7 @@ fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::PowerShell,
     });
 
     let description = if cfg!(windows) {
@@ -50,7 +54,7 @@ fn exec_command_tool_matches_expected_spec() {
         (
             "shell".to_string(),
             JsonSchema::string(Some(
-                    "Shell binary to launch. Defaults to the user's default shell.".to_string(),
+                    "Shell binary to launch. Defaults to the selected environment's shell, or the configured session shell when the environment does not report one.".to_string(),
                 )),
         ),
         (
@@ -104,6 +108,7 @@ fn exec_command_tool_can_hide_shell_parameter() {
         CommandToolOptions {
             allow_login_shell: true,
             exec_permission_approvals_enabled: false,
+            windows_shell_kind: WindowsShellKind::PowerShell,
         },
         /*include_environment_id*/ false,
         /*include_shell_parameter*/ false,
@@ -207,6 +212,7 @@ fn shell_command_tool_matches_expected_spec() {
     let tool = create_shell_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::PowerShell,
     });
 
     let description = if cfg!(windows) {
@@ -232,7 +238,7 @@ Examples of valid command strings:
         (
             "command".to_string(),
             JsonSchema::string(Some(
-                "Shell script to run in the user's default shell.".to_string(),
+                "Shell script to run in the selected environment's shell.".to_string(),
             )),
         ),
         (
@@ -273,5 +279,72 @@ Examples of valid command strings:
             ),
             output_schema: None,
         })
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn shell_command_tool_describes_git_bash() {
+    let tool = create_shell_command_tool(CommandToolOptions {
+        allow_login_shell: true,
+        exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::GitBash,
+    });
+
+    let ToolSpec::Function(tool) = tool else {
+        panic!("shell command tool must be a function tool");
+    };
+    assert!(
+        tool.description
+            .contains("Runs a Git Bash command (Windows)")
+    );
+    assert!(
+        tool.description
+            .contains("Windows safety rules (Git Bash):")
+    );
+    assert!(tool.description.contains("grep -r 'TODO' ."));
+}
+
+#[cfg(windows)]
+#[test]
+fn shell_command_tool_uses_environment_neutral_description_when_needed() {
+    let tool = create_shell_command_tool(CommandToolOptions {
+        allow_login_shell: true,
+        exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::EnvironmentDefault,
+    });
+
+    let ToolSpec::Function(tool) = tool else {
+        panic!("shell command tool must be a function tool");
+    };
+    assert!(
+        tool.description
+            .contains("Runs a command in the selected environment")
+    );
+    assert!(
+        tool.description
+            .contains("Do not assume PowerShell or Git Bash")
+    );
+    assert!(
+        tool.description
+            .contains("Windows safety rules (environment-specific shell):")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn exec_command_tool_uses_git_bash_guidance() {
+    let tool = create_exec_command_tool(CommandToolOptions {
+        allow_login_shell: true,
+        exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::GitBash,
+    });
+
+    let ToolSpec::Function(tool) = tool else {
+        panic!("exec command tool must be a function tool");
+    };
+    assert!(
+        tool.description
+            .contains("Windows safety rules (Git Bash):")
     );
 }
