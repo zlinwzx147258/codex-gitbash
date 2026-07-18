@@ -88,8 +88,8 @@ unalias codex
 可选命令，把 alias 写入 `~/.bashrc` 后重新加载。项目不会替你执行这一步：
 
 ```bash
-grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \
-  || echo "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
+grep -qxF "alias codex='/h/tools/codex/bin/codex-gitbash.sh'" ~/.bashrc \
+  || echo "alias codex='/h/tools/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
 source ~/.bashrc
 ```
 
