@@ -25,7 +25,9 @@ jobs:
   build:
     name: Rebase Git Bash patch and build Windows CLI
     runs-on: windows-latest
-    timeout-minutes: 90
+    # A cold Windows/MSVC build took 88m38s in the first verified run.
+    # Keep headroom for slower hosted runners and cache-save time.
+    timeout-minutes: 180
     permissions:
       contents: read
     outputs:
@@ -136,6 +138,22 @@ jobs:
         uses: ./.github/actions/setup-msvc-env
         with:
           target: x86_64-pc-windows-msvc
+
+      - name: Restore Cargo dependency and release build cache
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            codex-rs/target/x86_64-pc-windows-msvc/release
+          # Keep the key stable across source-only upstream changes so Cargo can
+          # reuse unchanged MSVC release dependencies; Cargo invalidates changed
+          # crates itself. Lockfile/toolchain changes receive a new cache key.
+          key: gitbash-codex-windows-msvc-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: |
+            gitbash-codex-windows-msvc-v1-${{ runner.os }}-
 
       - name: Build patched Codex CLI
         if: ${{ steps.sync.outputs.should_build == 'true' }}
