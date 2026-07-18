@@ -118,7 +118,7 @@ jobs:
           printf 'should_build=%s\n' "$should_build" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## Git Bash Codex upstream check"
+            echo "## Codex Git Bash for Windows upstream check"
             echo
             echo "- Patch baseline: \`$patch_base_sha\`"
             echo "- Upstream main: \`$upstream_sha\`"
@@ -201,17 +201,23 @@ jobs:
           chmod 755 "$output_dir/codex-gitbash.sh"
 
           cat > "$output_dir/README-gitbash.md" <<README
-          # Git Bash Codex
+# Codex Git Bash for Windows
+
+          > Unofficial Windows Git Bash distribution based on OpenAI Codex.
 
           Run from Git Bash:
 
               ./codex-gitbash.sh
 
-          This package was built from patched Codex source $source_sha
-          rebased onto OpenAI upstream commit $upstream_sha.
-          See BUILD-METADATA.txt for the complete commit provenance.
-          It uses the same default Codex user home as the official CLI unless
-          you explicitly set CODEX_HOME.
+          The launcher selects Git Bash as Codex's native Windows agent shell.
+          It does not replace a normally installed `codex` command and uses the
+          same `~/.codex` user state (sign-in, configuration, plugins, skills,
+          hooks, and MCP settings).
+
+          This package was built from patched Codex source $source_sha rebased
+          onto OpenAI upstream commit $upstream_sha. See BUILD-METADATA.txt for
+          complete provenance and https://github.com/zlinwzx147258/codex-gitbash
+          for current documentation.
           README
 
           cat > "$output_dir/BUILD-METADATA.txt" <<METADATA
@@ -270,13 +276,13 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$ARCHIVE"
-          notes="$(printf 'Automated Git Bash Codex build.\n\n- Patch baseline (release-tag target): %s\n- Upstream main: %s\n- Rebased source: %s\n- Full source provenance: BUILD-METADATA.txt inside the archive\n\nThe release tag identifies the patch baseline and upstream commit. The archive was built from the rebased source shown above.\n' "$PATCH_BASE_SHA" "$UPSTREAM_SHA" "$SOURCE_SHA_FULL")"
+          notes="$(printf 'Automated Codex Git Bash for Windows build.\n\n> Unofficial downstream distribution based on OpenAI Codex. The included launcher selects Git Bash as the native Windows agent shell.\n\n- Start from Git Bash: `./codex-gitbash.sh`\n- Documentation: https://github.com/zlinwzx147258/codex-gitbash\n- Patch baseline (release-tag target): %s\n- Upstream main: %s\n- Rebased source: %s\n- Full source provenance: BUILD-METADATA.txt inside the archive\n\nThe release tag identifies the patch baseline and upstream commit. The archive was built from the rebased source shown above.\n' "$PATCH_BASE_SHA" "$UPSTREAM_SHA" "$SOURCE_SHA_FULL")"
           lookup_error="$(mktemp)"
           trap 'rm -f "$lookup_error"' EXIT
 
           if gh api --silent "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > /dev/null 2>"$lookup_error"; then
             gh release edit "$TAG" \
-              --title "Git Bash Codex $SOURCE_SHA" \
+              --title "Codex Git Bash for Windows $SOURCE_SHA" \
               --notes "$notes" \
               --prerelease
             gh release upload "$TAG" "$ARCHIVE" --clobber
@@ -288,7 +294,7 @@ jobs:
             fi
             gh release create "$TAG" "$ARCHIVE" \
               --target "$PATCH_BASE_SHA" \
-              --title "Git Bash Codex $SOURCE_SHA" \
+              --title "Codex Git Bash for Windows $SOURCE_SHA" \
               --notes "$notes" \
               --prerelease
           fi
