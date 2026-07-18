@@ -1764,6 +1764,7 @@ async fn network_proxy_feature_matrix_preserves_sandbox_network_semantics() -> s
                 windows: Some(WindowsToml {
                     sandbox: Some(WindowsSandboxModeToml::Elevated),
                     sandbox_private_desktop: None,
+                    agent_shell: None,
                 }),
                 features,
                 ..Default::default()
@@ -3220,6 +3221,7 @@ async fn implicit_builtin_workspace_profile_preserves_sandbox_workspace_write_se
             windows: Some(WindowsToml {
                 sandbox: Some(WindowsSandboxModeToml::Elevated),
                 sandbox_private_desktop: None,
+                agent_shell: None,
             }),
             ..Default::default()
         },
@@ -3285,6 +3287,7 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
             windows: Some(WindowsToml {
                 sandbox: Some(WindowsSandboxModeToml::Elevated),
                 sandbox_private_desktop: None,
+                agent_shell: None,
             }),
             ..Default::default()
         },
