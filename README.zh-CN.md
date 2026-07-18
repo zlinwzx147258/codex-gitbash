@@ -59,6 +59,31 @@ agent_shell = "git-bash"
 不要直接运行 `codex-gitbash.exe`；应通过 `codex-gitbash.sh` 启动，确保 Git
 Bash 配置被正确传入。
 
+### 在当前 Git Bash 会话中直接输入 `codex`
+
+执行下面这行后，当前 Git Bash 窗口即可直接使用自定义 Git Bash 版本：
+
+```bash
+alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'
+```
+
+随后可像官方命令一样启动：
+
+```bash
+codex
+# 或者
+codex --dangerously-bypass-approvals-and-sandbox
+```
+
+`alias` 只对当前 Git Bash 会话有效；关闭窗口后会失效。如果希望以后每次打开
+Git Bash 都能直接输入 `codex`，执行一次下面的幂等写入命令：
+
+```bash
+grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \
+  || echo "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
+source ~/.bashrc
+```
+
 ## 配置、插件与官方 Codex 是否共用？
 
 共用。此构建使用和官方 Codex CLI 相同的用户目录：

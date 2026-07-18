@@ -41,6 +41,31 @@ To start with Codex's approval and sandbox bypass flag:
 ./codex-gitbash.sh --dangerously-bypass-approvals-and-sandbox
 ```
 
+### Use `codex` directly in the current Git Bash session
+
+On the maintained local build machine, create a session-only alias:
+
+```bash
+alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'
+```
+
+You can then start the Git Bash build with the normal command name:
+
+```bash
+codex
+# or
+codex --dangerously-bypass-approvals-and-sandbox
+```
+
+This alias disappears when the current Git Bash window closes. To make it
+persistent, add the same line to `~/.bashrc` once, then reload it:
+
+```bash
+grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \
+  || echo "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
+source ~/.bashrc
+```
+
 > Do not start `codex-gitbash.exe` directly: use `codex-gitbash.sh` so the Git
 > Bash shell setting is always supplied.
 
