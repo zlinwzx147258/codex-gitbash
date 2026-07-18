@@ -46,7 +46,7 @@ agent_shell = "git-bash"
 当前机器的本地启动器位于：
 
 ```bash
-/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh
+/h/tools/codex/bin/codex-gitbash.sh
 ```
 
 例如：
