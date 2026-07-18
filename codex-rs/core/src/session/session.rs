@@ -9,6 +9,7 @@ use crate::session::turn_context::TurnEnvironmentConfig;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use codex_config::types::WindowsAgentShellToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
@@ -1030,6 +1031,17 @@ impl Session {
                 session_configuration.user_shell_override.clone()
             {
                 user_shell_override
+            } else if cfg!(windows)
+                && matches!(
+                    config.permissions.windows_agent_shell,
+                    Some(WindowsAgentShellToml::GitBash)
+                )
+            {
+                shell::git_bash_shell().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "windows.agent_shell is set to `git-bash`, but Git Bash could not be found; install Git for Windows or set it to `power-shell`"
+                    )
+                })?
             } else if use_zsh_fork_shell {
                 let zsh_path = config.zsh_path.as_ref().ok_or_else(|| {
                     anyhow::anyhow!(
