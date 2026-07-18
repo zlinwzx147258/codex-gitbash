@@ -1,0 +1,276 @@
+name: Build Git Bash Codex from upstream
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build and publish even when upstream/main has not changed.
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Daily at 03:17 UTC. The job skips the expensive build if upstream/main is unchanged.
+    - cron: "17 3 * * *"
+
+# The build job is read-only. Only the isolated release job receives permission
+# to create or update a prerelease; neither job pushes or rewrites a branch.
+permissions:
+  contents: read
+
+concurrency:
+  group: gitbash-upstream-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Rebase Git Bash patch and build Windows CLI
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.sync.outputs.should_build }}
+      patch_base_sha: ${{ steps.sync.outputs.patch_base_sha }}
+      source_sha: ${{ steps.sync.outputs.source_sha }}
+      source_sha_full: ${{ steps.sync.outputs.source_sha_full }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      artifact_name: ${{ steps.sync.outputs.artifact_name }}
+      archive_name: ${{ steps.sync.outputs.archive_name }}
+      tag: ${{ steps.sync.outputs.tag }}
+
+    steps:
+      - name: Check out the Git Bash patch baseline
+        # `main` in this fork is the reviewed patch baseline. Pinning this ref
+        # prevents a manual workflow-dispatch ref from changing the code built.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase the patch onto openai/codex main
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          patch_base_sha="$(git rev-parse HEAD)"
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/openai/codex.git
+          git fetch --no-tags upstream main
+
+          upstream_sha="$(git rev-parse upstream/main)"
+          base_sha="$(git merge-base HEAD upstream/main)"
+
+          if [[ "$base_sha" != "$upstream_sha" ]]; then
+            echo "Rebasing Git Bash patch onto upstream/main ($upstream_sha)"
+            # A conflict intentionally fails this job. Do not publish an
+            # artifact whose patch did not apply cleanly to upstream.
+            git rebase --committer-date-is-author-date upstream/main
+          fi
+
+          source_sha_full="$(git rev-parse HEAD)"
+          source_sha="${source_sha_full:0:12}"
+          artifact_name="codex-gitbash-windows-x64-$source_sha"
+          archive_name="$artifact_name.zip"
+          tag="gitbash-base-${patch_base_sha:0:12}-upstream-${upstream_sha:0:12}"
+          should_build=false
+          publication_state='not-checked'
+
+          if [[ "${{ inputs.force_build }}" == "true" ]]; then
+            should_build=true
+            publication_state='forced'
+          else
+            asset_names="$(mktemp)"
+            lookup_error="$(mktemp)"
+            trap 'rm -f "$asset_names" "$lookup_error"' EXIT
+            if gh api --jq '.assets[].name' "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$asset_names" 2>"$lookup_error"; then
+              if grep -Fxq "$archive_name" "$asset_names"; then
+                publication_state='already-published'
+              else
+                should_build=true
+                publication_state='asset-missing'
+              fi
+            else
+              lookup_status=$?
+              if grep -Eq 'HTTP 404|status 404' "$lookup_error"; then
+                should_build=true
+                publication_state='release-missing'
+              else
+                cat "$lookup_error" >&2
+                exit "$lookup_status"
+              fi
+            fi
+          fi
+
+          printf 'patch_base_sha=%s\n' "$patch_base_sha" >> "$GITHUB_OUTPUT"
+          printf 'upstream_sha=%s\n' "$upstream_sha" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          printf 'source_sha_full=%s\n' "$source_sha_full" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+          printf 'archive_name=%s\n' "$archive_name" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'should_build=%s\n' "$should_build" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Git Bash Codex upstream check"
+            echo
+            echo "- Patch baseline: \`$patch_base_sha\`"
+            echo "- Upstream main: \`$upstream_sha\`"
+            echo "- Rebased source: \`$source_sha\`"
+            echo "- Publication state: \`$publication_state\`"
+            echo "- Build required: \`$should_build\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Rust toolchain
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure MSVC environment
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build patched Codex CLI
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          cargo build --target x86_64-pc-windows-msvc --release -p codex-cli --bin codex
+
+      - name: Package Git Bash launcher
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch_base_sha="${{ steps.sync.outputs.patch_base_sha }}"
+          source_sha="${{ steps.sync.outputs.source_sha }}"
+          source_sha_full="${{ steps.sync.outputs.source_sha_full }}"
+          upstream_sha="${{ steps.sync.outputs.upstream_sha }}"
+          workspace="$(pwd -P)"
+          target_root="${CARGO_TARGET_DIR:-$workspace/codex-rs/target}"
+          release_dir="$target_root/x86_64-pc-windows-msvc/release"
+          artifact_name="${{ steps.sync.outputs.artifact_name }}"
+          archive_name="${{ steps.sync.outputs.archive_name }}"
+          output_dir="$workspace/dist/$artifact_name"
+          archive="dist/$archive_name"
+
+          test -f "$release_dir/codex.exe"
+          mkdir -p "$output_dir"
+          cp "$release_dir/codex.exe" "$output_dir/codex-gitbash.exe"
+
+          cat > "$output_dir/codex-gitbash.sh" <<'LAUNCHER'
+          #!/usr/bin/env bash
+          # Starts the patched Codex binary with Git for Windows Bash selected.
+          set -euo pipefail
+          script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+          git_root='/c/Program Files/Git'
+          if [[ ! -x "$git_root/bin/bash.exe" ]]; then
+            printf 'Git for Windows was not found at %s.\n' "$git_root" >&2
+            exit 127
+          fi
+          export PATH="$git_root/usr/bin:$git_root/bin:$PATH"
+          exec "$script_dir/codex-gitbash.exe" -c 'windows.agent_shell="git-bash"' "$@"
+          LAUNCHER
+          chmod 755 "$output_dir/codex-gitbash.sh"
+
+          cat > "$output_dir/README-gitbash.md" <<README
+          # Git Bash Codex
+
+          Run from Git Bash:
+
+              ./codex-gitbash.sh
+
+          This package was built from patched Codex source $source_sha
+          rebased onto OpenAI upstream commit $upstream_sha.
+          See BUILD-METADATA.txt for the complete commit provenance.
+          It uses the same default Codex user home as the official CLI unless
+          you explicitly set CODEX_HOME.
+          README
+
+          cat > "$output_dir/BUILD-METADATA.txt" <<METADATA
+          patch_baseline_commit=$patch_base_sha
+          upstream_main_commit=$upstream_sha
+          rebased_source_commit=$source_sha_full
+          METADATA
+
+          (
+            cd "$output_dir"
+            sha256sum codex-gitbash.exe codex-gitbash.sh README-gitbash.md BUILD-METADATA.txt > SHA256SUMS.txt
+          )
+          output_dir_windows="$(cygpath -w "$output_dir")"
+          archive_windows="$(cygpath -w "$workspace/$archive")"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path '$output_dir_windows\*' -DestinationPath '$archive_windows' -Force"
+
+      - name: Upload workflow artifact
+        if: ${{ steps.sync.outputs.should_build == 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.sync.outputs.artifact_name }}
+          path: dist/${{ steps.sync.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish Git Bash prerelease
+    needs: build
+    if: ${{ needs.build.outputs.should_build == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # This is the only write-capable job. It cannot execute the checked-out
+    # Codex source: it downloads only the archive emitted by the read-only job.
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download packaged artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release
+
+      - name: Create or update prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          ARCHIVE: release/${{ needs.build.outputs.archive_name }}
+          PATCH_BASE_SHA: ${{ needs.build.outputs.patch_base_sha }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          SOURCE_SHA_FULL: ${{ needs.build.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.build.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ARCHIVE"
+          notes="$(printf 'Automated Git Bash Codex build.\n\n- Patch baseline (release-tag target): %s\n- Upstream main: %s\n- Rebased source: %s\n- Full source provenance: BUILD-METADATA.txt inside the archive\n\nThe release tag identifies the patch baseline and upstream commit. The archive was built from the rebased source shown above.\n' "$PATCH_BASE_SHA" "$UPSTREAM_SHA" "$SOURCE_SHA_FULL")"
+          lookup_error="$(mktemp)"
+          trap 'rm -f "$lookup_error"' EXIT
+
+          if gh api --silent "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > /dev/null 2>"$lookup_error"; then
+            gh release edit "$TAG" \
+              --title "Git Bash Codex $SOURCE_SHA" \
+              --notes "$notes" \
+              --prerelease
+            gh release upload "$TAG" "$ARCHIVE" --clobber
+          else
+            lookup_status=$?
+            if ! grep -Eq 'HTTP 404|status 404' "$lookup_error"; then
+              cat "$lookup_error" >&2
+              exit "$lookup_status"
+            fi
+            gh release create "$TAG" "$ARCHIVE" \
+              --target "$PATCH_BASE_SHA" \
+              --title "Git Bash Codex $SOURCE_SHA" \
+              --notes "$notes" \
+              --prerelease
+          fi
