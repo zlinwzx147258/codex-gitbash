@@ -1,71 +1,78 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex Git Bash for Windows
 
----
+> [!IMPORTANT]
+> **Unofficial downstream build.** This repository is a Windows-focused fork of
+> [OpenAI Codex](https://github.com/openai/codex). It adds a configurable
+> **native Git Bash** agent shell and is not an OpenAI-maintained distribution.
 
-## Quickstart
+[中文说明](README.zh-CN.md) · [Git Bash launcher reference](docs/git-bash.md) · [Releases](https://github.com/zlinwzx147258/codex-gitbash/releases) · [Upstream Codex](https://github.com/openai/codex)
 
-### Installing and running Codex CLI
+## Run Codex natively through Git Bash
 
-Run the following on Mac or Linux to install Codex CLI:
+1. Open this repository's latest **pre-release** and download the asset named
+   `codex-gitbash-windows-x64-*.zip`.
+2. Extract the archive anywhere you control.
+3. From **Git Bash**, run the included launcher:
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```bash
+./codex-gitbash.sh
 ```
 
-Run the following on Windows to install Codex CLI:
+The launcher starts the bundled Windows executable with:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```toml
+[windows]
+agent_shell = "git-bash"
 ```
 
-Codex CLI can also be installed via the following package managers:
+It intentionally uses Git Bash for Codex's agent commands while retaining the
+same user state as the official CLI (`~/.codex`): sign-in, configuration,
+plugins, skills, hooks, and MCP settings are shared.
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+To use the local checkout built on this machine instead, run:
+
+```bash
+/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+To start with Codex's approval and sandbox bypass flag:
+
+```bash
+./codex-gitbash.sh --dangerously-bypass-approvals-and-sandbox
 ```
 
-Then simply run `codex` to get started.
+> Do not start `codex-gitbash.exe` directly: use `codex-gitbash.sh` so the Git
+> Bash shell setting is always supplied.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+## What this fork changes
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+- Adds the `windows.agent_shell = "git-bash"` configuration option.
+- Detects and launches Git Bash as the Windows agent shell.
+- Provides `codex-gitbash.sh`, a safe launcher that enables the setting for one
+  invocation without replacing the npm-installed `codex` command.
+- Automatically rebases the reviewed patch on the current upstream `main`,
+  builds a Windows x64 executable, and publishes a pre-release when upstream
+  changes.
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+The source remains an OpenAI Codex derivative under the repository's existing
+[Apache-2.0 license](LICENSE). This fork's Git Bash-specific changes live on
+its `main` branch and are documented in the release metadata.
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+## Automatic upstream builds
 
-</details>
+The **Build Codex Git Bash for Windows** workflow checks upstream daily at
+03:17 UTC (11:17 China Standard Time) and skips the expensive Rust build when
+there is no new upstream commit. You can also run it manually from the
+**Actions** tab. A changed upstream revision requires a fresh Windows/MSVC
+compile; the workflow caches Rust dependencies and build artifacts to speed up
+later runs.
 
-### Using Codex with your ChatGPT plan
+## Upstream Codex documentation
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+For the official product, account, IDE, API, authentication, and general CLI
+documentation, use the upstream resources:
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+- [Codex documentation](https://developers.openai.com/codex)
+- [OpenAI Codex source repository](https://github.com/openai/codex)
+- [Contributing guide](docs/contributing.md)
+- [Installing and building from source](docs/install.md)
