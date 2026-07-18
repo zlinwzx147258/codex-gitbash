@@ -1,4 +1,4 @@
-name: Build Git Bash Codex from upstream
+name: Build Codex Git Bash for Windows
 
 on:
   workflow_dispatch:
