@@ -201,7 +201,7 @@ jobs:
           chmod 755 "$output_dir/codex-gitbash.sh"
 
           cat > "$output_dir/README-gitbash.md" <<README
-# Codex Git Bash for Windows
+          # Codex Git Bash for Windows
 
           > Unofficial Windows Git Bash distribution based on OpenAI Codex.
 

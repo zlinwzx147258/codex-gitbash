@@ -5,7 +5,7 @@
 > [OpenAI Codex](https://github.com/openai/codex). It adds a configurable
 > **native Git Bash** agent shell and is not an OpenAI-maintained distribution.
 
-[中文说明](README.zh-CN.md) · [Git Bash launcher reference](docs/git-bash.md) · [Releases](https://github.com/zlinwzx147258/codex-gitbash/releases) · [Upstream Codex](https://github.com/openai/codex)
+[Chinese documentation](README.zh-CN.md) | [Git Bash launcher reference](docs/git-bash.md) | [Releases](https://github.com/zlinwzx147258/codex-gitbash/releases) | [Upstream Codex](https://github.com/openai/codex)
 
 ## Run Codex natively through Git Bash
 
@@ -29,10 +29,10 @@ It intentionally uses Git Bash for Codex's agent commands while retaining the
 same user state as the official CLI (`~/.codex`): sign-in, configuration,
 plugins, skills, hooks, and MCP settings are shared.
 
-To use the local checkout built on this machine instead, run:
+For a local source checkout, run this from repository root:
 
 ```bash
-/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh
+./bin/codex-gitbash.sh
 ```
 
 To start with Codex's approval and sandbox bypass flag:
@@ -41,18 +41,19 @@ To start with Codex's approval and sandbox bypass flag:
 ./codex-gitbash.sh --dangerously-bypass-approvals-and-sandbox
 ```
 
-### Tutorial: manually use `codex` in the current Git Bash session
+## Manual `codex` alias tutorial
 
-> **Documentation only — no automatic configuration.** Neither this repository
-> nor `codex-gitbash.sh` creates this alias or writes to `~/.bashrc`. In an
-> already open **Git Bash** window, you may manually paste the following command
-> if you choose to use the local build through the normal `codex` name:
+> **Documentation only - no automatic configuration.** Neither this repository
+> nor `codex-gitbash.sh` creates an alias or writes to `~/.bashrc`.
+
+In an already open **Git Bash** window, you may manually create an alias for a
+local checkout. Replace the placeholder with the absolute checkout path:
 
 ```bash
-alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'
+alias codex='/absolute/path/to/codex/bin/codex-gitbash.sh'
 ```
 
-After you manually run it, you can start the Git Bash build with:
+After you manually run it, start the Git Bash build with:
 
 ```bash
 codex
@@ -61,21 +62,14 @@ codex --dangerously-bypass-approvals-and-sandbox
 ```
 
 The alias affects only that one Git Bash window and disappears when it closes.
-To remove it sooner without changing any files, run:
+To remove it earlier without changing files, run:
 
 ```bash
 unalias codex
 ```
 
-If you personally decide that it should persist across future Git Bash sessions,
-manually add the same alias to `~/.bashrc` once and reload the file. This is
-optional and must be copied and run by you; the project never performs it:
-
-```bash
-grep -qxF "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" ~/.bashrc \
-  || echo "alias codex='/h/tools/内核处理二号区/codex/bin/codex-gitbash.sh'" >> ~/.bashrc
-source ~/.bashrc
-```
+The [Chinese documentation](README.zh-CN.md) contains the exact local command
+for the maintained build machine and an optional, manual `~/.bashrc` tutorial.
 
 > Do not start `codex-gitbash.exe` directly: use `codex-gitbash.sh` so the Git
 > Bash shell setting is always supplied.
