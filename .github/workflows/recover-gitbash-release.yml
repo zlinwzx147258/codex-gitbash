@@ -81,11 +81,10 @@ jobs:
           test -f "$archive"
           mkdir verified-package
           unzip -q "$archive" -d verified-package
-          package_dirs=(verified-package/*)
-          [[ "${#package_dirs[@]}" -eq 1 ]]
-          test -d "${package_dirs[0]}"
+          test -f verified-package/SHA256SUMS.txt
+          test -f verified-package/BUILD-METADATA.txt
           (
-            cd "${package_dirs[0]}"
+            cd verified-package
             sha256sum -c SHA256SUMS.txt
             grep -Fx "patch_baseline_commit=$PATCH_BASE_SHA" BUILD-METADATA.txt
             grep -Fx "upstream_main_commit=$UPSTREAM_SHA" BUILD-METADATA.txt
