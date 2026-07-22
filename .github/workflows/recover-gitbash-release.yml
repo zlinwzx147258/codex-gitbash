@@ -45,6 +45,17 @@ jobs:
       contents: write
 
     steps:
+      - name: Require release credential
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::Missing repository secret GITBASH_RELEASE_TOKEN."
+            exit 1
+          fi
+
       - name: Download preserved artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7.0.0
         with:
@@ -57,7 +68,9 @@ jobs:
       - name: Verify and publish prerelease
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Downloads use the ephemeral Actions token above; Release API calls
+          # use this dedicated repository-scoped fine-grained PAT.
+          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
           GH_REPO: ${{ github.repository }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           PATCH_BASE_SHA: ${{ inputs.patch_base_sha }}
