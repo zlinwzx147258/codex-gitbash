@@ -50,10 +50,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Require release credential
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::Missing repository secret GITBASH_RELEASE_TOKEN."
+            exit 1
+          fi
+
       - name: Rebase the patch onto openai/codex main
         id: sync
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Forked-repository GITHUB_TOKEN values can be denied Release API
+          # access even when the job has contents: write. Use the dedicated,
+          # repository-scoped fine-grained PAT instead.
+          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -264,7 +278,7 @@ jobs:
 
       - name: Create or update prerelease
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.build.outputs.tag }}
           ARCHIVE: release/${{ needs.build.outputs.archive_name }}
