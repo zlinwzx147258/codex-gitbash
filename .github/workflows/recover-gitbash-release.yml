@@ -1,0 +1,114 @@
+name: Recover Git Bash release artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Failed build run that owns the preserved artifact.
+        required: true
+        type: string
+      patch_base_sha:
+        description: Full Git Bash patch baseline commit SHA.
+        required: true
+        type: string
+      source_sha:
+        description: 12-character rebased source SHA used in artifact name.
+        required: true
+        type: string
+      source_sha_full:
+        description: Full rebased source commit SHA.
+        required: true
+        type: string
+      upstream_sha:
+        description: Full upstream main commit SHA.
+        required: true
+        type: string
+
+# This workflow never checks out or executes repository code. It only validates
+# and publishes an artifact already produced by the normal build workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: gitbash-release-recovery
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish preserved Git Bash artifact
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download preserved artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v7.0.0
+        with:
+          name: codex-gitbash-windows-x64-${{ inputs.source_sha }}
+          path: release
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify and publish prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          PATCH_BASE_SHA: ${{ inputs.patch_base_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA_FULL: ${{ inputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$PATCH_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{12}$ ]]
+          [[ "$SOURCE_SHA_FULL" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$UPSTREAM_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${SOURCE_SHA_FULL:0:12}" == "$SOURCE_SHA" ]]
+
+          artifact_name="codex-gitbash-windows-x64-$SOURCE_SHA"
+          archive="release/$artifact_name.zip"
+          tag="gitbash-base-${PATCH_BASE_SHA:0:12}-upstream-${UPSTREAM_SHA:0:12}"
+
+          test -f "$archive"
+          mkdir verified-package
+          unzip -q "$archive" -d verified-package
+          package_dirs=(verified-package/*)
+          [[ "${#package_dirs[@]}" -eq 1 ]]
+          test -d "${package_dirs[0]}"
+          (
+            cd "${package_dirs[0]}"
+            sha256sum -c SHA256SUMS.txt
+            grep -Fx "patch_baseline_commit=$PATCH_BASE_SHA" BUILD-METADATA.txt
+            grep -Fx "upstream_main_commit=$UPSTREAM_SHA" BUILD-METADATA.txt
+            grep -Fx "rebased_source_commit=$SOURCE_SHA_FULL" BUILD-METADATA.txt
+          )
+
+          notes="$(printf 'Recovered Codex Git Bash for Windows build.\n\n> Artifact verified from GitHub Actions run %s before publication. The normal release job had failed after a repository rename.\n\n- Start from Git Bash: `./codex-gitbash.sh`\n- Patch baseline (release-tag target): %s\n- Upstream main: %s\n- Rebased source: %s\n- Full source provenance: BUILD-METADATA.txt inside the archive\n' "$SOURCE_RUN_ID" "$PATCH_BASE_SHA" "$UPSTREAM_SHA" "$SOURCE_SHA_FULL")"
+          lookup_error="$(mktemp)"
+          trap 'rm -f "$lookup_error"' EXIT
+
+          if gh api --silent "repos/$GH_REPO/releases/tags/$tag" > /dev/null 2>"$lookup_error"; then
+            gh release edit "$tag" \
+              --title "Codex Git Bash for Windows $SOURCE_SHA" \
+              --notes "$notes" \
+              --prerelease
+            gh release upload "$tag" "$archive" --clobber
+          else
+            lookup_status=$?
+            if ! grep -Eq 'HTTP 404|status 404' "$lookup_error"; then
+              cat "$lookup_error" >&2
+              exit "$lookup_status"
+            fi
+            gh release create "$tag" "$archive" \
+              --target "$PATCH_BASE_SHA" \
+              --title "Codex Git Bash for Windows $SOURCE_SHA" \
+              --notes "$notes" \
+              --prerelease
+          fi
