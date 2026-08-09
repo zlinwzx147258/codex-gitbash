@@ -12,8 +12,8 @@ on:
     # Daily at 03:17 UTC. The job skips the expensive build if upstream/main is unchanged.
     - cron: "17 3 * * *"
 
-# The build job is read-only. Only the isolated release job receives permission
-# to create or update a prerelease; neither job pushes or rewrites a branch.
+# The build job is read-only. Publication and main advancement happen in fresh,
+# separately gated jobs so built source never pushes from the Windows workspace.
 permissions:
   contents: read
 
@@ -32,12 +32,15 @@ jobs:
       contents: read
     outputs:
       should_build: ${{ steps.sync.outputs.should_build }}
+      should_advance: ${{ steps.sync.outputs.should_advance }}
       patch_base_sha: ${{ steps.sync.outputs.patch_base_sha }}
       source_sha: ${{ steps.sync.outputs.source_sha }}
       source_sha_full: ${{ steps.sync.outputs.source_sha_full }}
       upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
       artifact_name: ${{ steps.sync.outputs.artifact_name }}
       archive_name: ${{ steps.sync.outputs.archive_name }}
+      source_bundle_artifact: ${{ steps.sync.outputs.source_bundle_artifact }}
+      source_bundle_name: ${{ steps.sync.outputs.source_bundle_name }}
       tag: ${{ steps.sync.outputs.tag }}
 
     steps:
@@ -64,10 +67,9 @@ jobs:
       - name: Rebase the patch onto openai/codex main
         id: sync
         env:
-          # Forked-repository GITHUB_TOKEN values can be denied Release API
-          # access even when the job has contents: write. Use the dedicated,
-          # repository-scoped fine-grained PAT instead.
-          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN }}
+          # Release discovery is read-only and must not consume the publication
+          # credential. The job-level contents: read permission is sufficient.
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -92,8 +94,14 @@ jobs:
           source_sha="${source_sha_full:0:12}"
           artifact_name="codex-gitbash-windows-x64-$source_sha"
           archive_name="$artifact_name.zip"
+          source_bundle_artifact="codex-gitbash-rebased-source-$source_sha"
+          source_bundle_name="$source_bundle_artifact.bundle"
           tag="gitbash-base-${patch_base_sha:0:12}-upstream-${upstream_sha:0:12}"
           should_build=false
+          should_advance=false
+          if [[ "$source_sha_full" != "$patch_base_sha" ]]; then
+            should_advance=true
+          fi
           publication_state='not-checked'
 
           if [[ "${{ inputs.force_build }}" == "true" ]]; then
@@ -103,22 +111,20 @@ jobs:
             asset_names="$(mktemp)"
             lookup_error="$(mktemp)"
             trap 'rm -f "$asset_names" "$lookup_error"' EXIT
-            if gh api --jq '.assets[].name' "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$asset_names" 2>"$lookup_error"; then
+            if gh api --paginate \
+              --jq '.[] | .assets[]?.name' \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              > "$asset_names" 2>"$lookup_error"; then
               if grep -Fxq "$archive_name" "$asset_names"; then
                 publication_state='already-published'
               else
                 should_build=true
-                publication_state='asset-missing'
+                publication_state='source-archive-missing'
               fi
             else
               lookup_status=$?
-              if grep -Eq 'HTTP 404|status 404' "$lookup_error"; then
-                should_build=true
-                publication_state='release-missing'
-              else
-                cat "$lookup_error" >&2
-                exit "$lookup_status"
-              fi
+              cat "$lookup_error" >&2
+              exit "$lookup_status"
             fi
           fi
 
@@ -128,8 +134,11 @@ jobs:
           printf 'source_sha_full=%s\n' "$source_sha_full" >> "$GITHUB_OUTPUT"
           printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
           printf 'archive_name=%s\n' "$archive_name" >> "$GITHUB_OUTPUT"
+          printf 'source_bundle_artifact=%s\n' "$source_bundle_artifact" >> "$GITHUB_OUTPUT"
+          printf 'source_bundle_name=%s\n' "$source_bundle_name" >> "$GITHUB_OUTPUT"
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           printf 'should_build=%s\n' "$should_build" >> "$GITHUB_OUTPUT"
+          printf 'should_advance=%s\n' "$should_advance" >> "$GITHUB_OUTPUT"
 
           {
             echo "## Codex Git Bash for Windows upstream check"
@@ -139,7 +148,47 @@ jobs:
             echo "- Rebased source: \`$source_sha\`"
             echo "- Publication state: \`$publication_state\`"
             echo "- Build required: \`$should_build\`"
+            echo "- Advance main after release gate: \`$should_advance\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create and verify rebased source bundle
+        if: ${{ steps.sync.outputs.should_advance == 'true' }}
+        env:
+          PATCH_BASE_SHA: ${{ steps.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ steps.sync.outputs.source_sha_full }}
+          SOURCE_BUNDLE_NAME: ${{ steps.sync.outputs.source_bundle_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_path="source-bundle/$SOURCE_BUNDLE_NAME"
+          actual_source="$(git rev-parse refs/heads/main)"
+          if [[ "$actual_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Local main is $actual_source, expected rebased source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+
+          mkdir -p "$(dirname "$bundle_path")"
+          git bundle create "$bundle_path" refs/heads/main "^$PATCH_BASE_SHA"
+          git bundle verify "$bundle_path"
+          mapfile -t bundle_heads < <(git bundle list-heads "$bundle_path" refs/heads/main)
+          if [[ "${#bundle_heads[@]}" -ne 1 ]]; then
+            echo "::error::Source bundle must advertise exactly one main ref."
+            exit 1
+          fi
+          read -r bundled_source bundled_ref <<< "${bundle_heads[0]}"
+          if [[ "$bundled_ref" != "refs/heads/main" || "$bundled_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Source bundle advertises $bundled_source $bundled_ref, expected $SOURCE_SHA_FULL refs/heads/main."
+            exit 1
+          fi
+
+      - name: Upload rebased source bundle
+        if: ${{ steps.sync.outputs.should_advance == 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.sync.outputs.source_bundle_artifact }}
+          path: source-bundle/${{ steps.sync.outputs.source_bundle_name }}
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Install Rust toolchain
         if: ${{ steps.sync.outputs.should_build == 'true' }}
@@ -263,8 +312,8 @@ jobs:
     if: ${{ needs.build.outputs.should_build == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
-    # This is the only write-capable job. It cannot execute the checked-out
-    # Codex source: it downloads only the archive emitted by the read-only job.
+    # Publication remains isolated from checked-out Codex source: this job
+    # downloads only the archive emitted by the read-only build job.
     permissions:
       actions: read
       contents: write
@@ -312,3 +361,115 @@ jobs:
               --notes "$notes" \
               --prerelease
           fi
+
+  advance_main:
+    name: Advance fork main to released rebased source
+    needs: [build, release]
+    if: >-
+      ${{
+        always() &&
+        needs.build.result == 'success' &&
+        needs.build.outputs.should_advance == 'true' &&
+        github.repository == 'zlinwzx147258/codex-gitbash' &&
+        github.ref == 'refs/heads/main' &&
+        (
+          needs.release.result == 'success' ||
+          (
+            needs.release.result == 'skipped' &&
+            needs.build.outputs.should_build == 'false'
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Fresh checkout plus an explicit full-OID lease makes advancement a
+    # compare-and-swap. A concurrent main update is preserved, never retried.
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Check out current fork main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Download rebased source bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.source_bundle_artifact }}
+          path: source-bundle
+
+      - name: Prepare exact rebased source
+        id: prepare
+        env:
+          PATCH_BASE_SHA: ${{ needs.build.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.build.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.build.outputs.upstream_sha }}
+          SOURCE_BUNDLE_NAME: ${{ needs.build.outputs.source_bundle_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_path="source-bundle/$SOURCE_BUNDLE_NAME"
+          test -f "$bundle_path"
+
+          current_main="$(git rev-parse refs/heads/main)"
+          if [[ "$current_main" == "$SOURCE_SHA_FULL" ]]; then
+            already_advanced=true
+          elif [[ "$current_main" == "$PATCH_BASE_SHA" ]]; then
+            already_advanced=false
+          else
+            echo "::error::Current main is $current_main; expected patch baseline $PATCH_BASE_SHA or source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+
+          git bundle verify "$bundle_path"
+          mapfile -t bundle_heads < <(git bundle list-heads "$bundle_path" refs/heads/main)
+          if [[ "${#bundle_heads[@]}" -ne 1 ]]; then
+            echo "::error::Source bundle must advertise exactly one main ref."
+            exit 1
+          fi
+          read -r bundled_source bundled_ref <<< "${bundle_heads[0]}"
+          if [[ "$bundled_ref" != "refs/heads/main" || "$bundled_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Source bundle advertises $bundled_source $bundled_ref, expected $SOURCE_SHA_FULL refs/heads/main."
+            exit 1
+          fi
+
+          git fetch --no-tags "$bundle_path" refs/heads/main
+          actual_source="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "$actual_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Fetched bundle source is $actual_source, expected $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$actual_source"; then
+            echo "::error::Upstream $UPSTREAM_SHA is not an ancestor of source $actual_source."
+            exit 1
+          fi
+
+          git checkout --detach "$actual_source"
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Detached checkout does not match expected source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          printf 'already_advanced=%s\n' "$already_advanced" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Fork main auto-advance"
+            echo
+            echo "- Current main: \`$current_main\`"
+            echo "- Verified rebased source: \`$SOURCE_SHA_FULL\`"
+            echo "- Already advanced (push is a no-op): \`$already_advanced\`"
+            echo "- Safety: full expected patch-baseline OID lease; no retry on races"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Advance main with exact compare-and-swap
+        if: ${{ steps.prepare.outputs.already_advanced != 'true' }}
+        env:
+          PATCH_BASE_SHA: ${{ needs.build.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.build.outputs.source_sha_full }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" origin "$SOURCE_SHA_FULL:refs/heads/main"
