@@ -5,7 +5,7 @@
 > [OpenAI Codex](https://github.com/openai/codex). It adds a configurable
 > **native Git Bash** agent shell and is not an OpenAI-maintained distribution.
 
-[Chinese documentation](README.zh-CN.md) | [Git Bash launcher reference](docs/git-bash.md) | [Releases](https://github.com/zlinwzx147258/codex-gitbash/releases) | [Upstream Codex](https://github.com/openai/codex)
+[中文文档](README.zh-CN.md) | [Git Bash launcher reference](docs/git-bash.md) | [Releases](https://github.com/zlinwzx147258/codex-gitbash/releases) | [Upstream Codex](https://github.com/openai/codex)
 
 ## Run Codex natively through Git Bash
 
