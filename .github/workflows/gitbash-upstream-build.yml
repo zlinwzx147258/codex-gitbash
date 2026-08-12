@@ -225,7 +225,12 @@ jobs:
         run: |
           set -euo pipefail
           export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
-          cargo build --target x86_64-pc-windows-msvc --release -p codex-cli --bin codex
+          cargo build --target x86_64-pc-windows-msvc --release \
+            -p codex-cli --bin codex \
+            -p codex-code-mode-host --bin codex-code-mode-host \
+            -p codex-windows-sandbox-rs \
+            --bin codex-command-runner \
+            --bin codex-windows-sandbox-setup
 
       - name: Package Git Bash launcher
         if: ${{ steps.sync.outputs.should_build == 'true' }}
@@ -245,8 +250,14 @@ jobs:
           archive="dist/$archive_name"
 
           test -f "$release_dir/codex.exe"
+          test -f "$release_dir/codex-code-mode-host.exe"
+          test -f "$release_dir/codex-command-runner.exe"
+          test -f "$release_dir/codex-windows-sandbox-setup.exe"
           mkdir -p "$output_dir"
           cp "$release_dir/codex.exe" "$output_dir/codex-gitbash.exe"
+          cp "$release_dir/codex-code-mode-host.exe" "$output_dir/codex-code-mode-host.exe"
+          cp "$release_dir/codex-command-runner.exe" "$output_dir/codex-command-runner.exe"
+          cp "$release_dir/codex-windows-sandbox-setup.exe" "$output_dir/codex-windows-sandbox-setup.exe"
 
           cat > "$output_dir/codex-gitbash.sh" <<'LAUNCHER'
           #!/usr/bin/env bash
@@ -279,7 +290,10 @@ jobs:
 
           This package was built from patched Codex source $source_sha rebased
           onto OpenAI upstream commit $upstream_sha. See BUILD-METADATA.txt for
-          complete provenance and https://github.com/zlinwzx147258/codex-gitbash
+          complete provenance and https://github.com/zlinwzx147258/codex-gitbash.
+          The bundled codex-code-mode-host.exe, codex-command-runner.exe, and
+          codex-windows-sandbox-setup.exe helpers ship beside the entrypoint so
+          Code Mode and the Windows sandbox work without an official Codex install
           for current documentation.
           README
 
@@ -291,7 +305,7 @@ jobs:
 
           (
             cd "$output_dir"
-            sha256sum codex-gitbash.exe codex-gitbash.sh README-gitbash.md BUILD-METADATA.txt > SHA256SUMS.txt
+            sha256sum codex-gitbash.exe codex-code-mode-host.exe codex-command-runner.exe codex-windows-sandbox-setup.exe codex-gitbash.sh README-gitbash.md BUILD-METADATA.txt > SHA256SUMS.txt
           )
           output_dir_windows="$(cygpath -w "$output_dir")"
           archive_windows="$(cygpath -w "$workspace/$archive")"

@@ -258,6 +258,28 @@ class GitBashUpstreamWorkflowTest(unittest.TestCase):
         self.assertNotIn("should_build", create_step)
         self.assertNotIn("should_build", upload_step)
 
+    def test_build_and_package_bundle_windows_helper_executables(self) -> None:
+        build = self.run_blocks["Build patched Codex CLI"]
+        for binary in (
+            "--bin codex",
+            "--bin codex-code-mode-host",
+            "--bin codex-command-runner",
+            "--bin codex-windows-sandbox-setup",
+        ):
+            self.assertIn(binary, build)
+
+        package = self.run_blocks["Package Git Bash launcher"]
+        for helper in (
+            "codex-code-mode-host.exe",
+            "codex-command-runner.exe",
+            "codex-windows-sandbox-setup.exe",
+        ):
+            self.assertIn(f'cp "$release_dir/{helper}" "$output_dir/{helper}"', package)
+        self.assertIn(
+            "sha256sum codex-gitbash.exe codex-code-mode-host.exe codex-command-runner.exe codex-windows-sandbox-setup.exe",
+            package,
+        )
+
     def test_advance_job_has_exact_gating_permissions_and_lease(self) -> None:
         job = extract_job(self.workflow, "advance_main")
         compact = compact_whitespace(job)
