@@ -383,7 +383,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Fresh checkout plus an explicit full-OID lease makes advancement a
-    # compare-and-swap. A concurrent main update is preserved, never retried.
+    # compare-and-swap. A concurrent main update is preserved; only transient
+    # workflow-validation push timeouts are retried with the same lease.
     permissions:
       actions: read
       contents: write
@@ -461,7 +462,7 @@ jobs:
             echo "- Current main: \`$current_main\`"
             echo "- Verified rebased source: \`$SOURCE_SHA_FULL\`"
             echo "- Already advanced (push is a no-op): \`$already_advanced\`"
-            echo "- Safety: full expected patch-baseline OID lease; no retry on races"
+            echo "- Safety: full expected patch-baseline OID lease; transient push-validation timeouts retry, races stay rejected"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Advance main with exact compare-and-swap
@@ -469,7 +470,31 @@ jobs:
         env:
           PATCH_BASE_SHA: ${{ needs.build.outputs.patch_base_sha }}
           SOURCE_SHA_FULL: ${{ needs.build.outputs.source_sha_full }}
+          ADVANCE_PUSH_ATTEMPTS: "5"
+          ADVANCE_PUSH_RETRY_SECONDS: "15"
         shell: bash
         run: |
           set -euo pipefail
-          git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" origin "$SOURCE_SHA_FULL:refs/heads/main"
+          # GitHub intermittently rejects pushes that touch workflow files with a
+          # transient validation timeout even though the token has write access.
+          # The lease is an exact-OID compare-and-swap, so retrying is safe: every
+          # attempt revalidates the expected baseline, and a concurrent main
+          # update keeps being rejected instead of overwritten.
+          push_log="$(mktemp)"
+          trap 'rm -f "$push_log"' EXIT
+          attempts="${ADVANCE_PUSH_ATTEMPTS:-5}"
+          retry_seconds="${ADVANCE_PUSH_RETRY_SECONDS:-15}"
+          for attempt in $(seq 1 "$attempts"); do
+            if git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" origin "$SOURCE_SHA_FULL:refs/heads/main" >"$push_log" 2>&1; then
+              cat "$push_log"
+              exit 0
+            fi
+            echo "Advance push attempt $attempt failed. Remote output:"
+            cat "$push_log"
+            if [[ "$attempt" -eq "$attempts" ]]; then
+              echo "::error::Advance push rejected after $attempts attempts."
+              exit 1
+            fi
+            echo "Retrying in ${retry_seconds}s."
+            sleep "$retry_seconds"
+          done

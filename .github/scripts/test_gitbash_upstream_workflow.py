@@ -418,6 +418,8 @@ class GitBashUpstreamWorkflowTest(unittest.TestCase):
             {
                 "PATCH_BASE_SHA": fixture.patch_base_sha,
                 "SOURCE_SHA_FULL": fixture.source_sha,
+                "ADVANCE_PUSH_ATTEMPTS": "1",
+                "ADVANCE_PUSH_RETRY_SECONDS": "0",
             },
         )
 
