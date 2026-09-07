@@ -28,6 +28,7 @@ use crate::state::ActiveTurn;
 use crate::turn_metadata::ExecutionMetadata;
 use codex_analytics::ThreadProductUpdate;
 use codex_attachment_store::AttachmentStore;
+use codex_config::types::WindowsAgentShellToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
@@ -1583,10 +1584,24 @@ impl Session {
                 &crate::config::legacy_multi_agent_disabled_sources(&config.config_layer_stack),
             );
 
-            let default_shell = session_configuration
-                .user_shell_override
-                .clone()
-                .unwrap_or_else(shell::default_user_shell);
+            let default_shell = if let Some(user_shell_override) =
+                session_configuration.user_shell_override.clone()
+            {
+                user_shell_override
+            } else if cfg!(windows)
+                && matches!(
+                    config.permissions.windows_agent_shell,
+                    Some(WindowsAgentShellToml::GitBash)
+                )
+            {
+                shell::git_bash_shell().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "windows.agent_shell is set to `git-bash`, but Git Bash could not be found; install Git for Windows or set it to `power-shell`"
+                    )
+                })?
+            } else {
+                shell::default_user_shell()
+            };
             let credential_broker_available = (config.features.enabled(Feature::NetworkProxy)
                 || config.features.enabled(Feature::CredentialMasking))
                 && config

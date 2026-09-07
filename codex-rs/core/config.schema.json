@@ -7672,6 +7672,14 @@
       },
       "type": "object"
     },
+    "WindowsAgentShellToml": {
+      "description": "Shell used by Codex-created local agent processes on Windows.",
+      "enum": [
+        "power-shell",
+        "git-bash"
+      ],
+      "type": "string"
+    },
     "WindowsSandboxModeToml": {
       "enum": [
         "elevated",
@@ -7683,6 +7691,14 @@
     "WindowsToml": {
       "additionalProperties": false,
       "properties": {
+        "agent_shell": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WindowsAgentShellToml"
+            }
+          ],
+          "description": "Shell used by local Codex agent processes. Defaults to PowerShell."
+        },
         "allow_mxc": {
           "description": "False blocks both explicit MXC configuration and automatic selection.",
           "type": "boolean"

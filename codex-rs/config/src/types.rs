@@ -193,12 +193,22 @@ pub enum WindowsSandboxModeToml {
     Mxc,
 }
 
+/// Shell used by Codex-created local agent processes on Windows.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsAgentShellToml {
+    PowerShell,
+    GitBash,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct WindowsToml {
     pub sandbox: Option<WindowsSandboxModeToml>,
     /// False blocks both explicit MXC configuration and automatic selection.
     pub allow_mxc: Option<bool>,
+    /// Shell used by local Codex agent processes. Defaults to PowerShell.
+    pub agent_shell: Option<WindowsAgentShellToml>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, JsonSchema)]
