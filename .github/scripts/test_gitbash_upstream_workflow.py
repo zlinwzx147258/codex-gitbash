@@ -164,6 +164,22 @@ class GitRepositoryFixture:
         )
         return checkout
 
+    def reject_workflow_pushes(self) -> None:
+        """Make the bare remote answer the way GitHub does for workflow files."""
+        hooks = self.remote / "hooks"
+        hooks.mkdir(exist_ok=True)
+        hook = hooks / "pre-receive"
+        message = (
+            "refusing to allow a Personal Access Token to create or update "
+            "workflow `.github/workflows/ci.yml` without `workflow` scope"
+        )
+        hook.write_text(
+            f"#!/bin/sh\necho '{message}' >&2\nexit 1\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        hook.chmod(0o755)
+
     def create_competing_commit(self) -> str:
         competitor = self.root / "competitor"
         self.git(self.root, "clone", str(self.remote), str(competitor))
@@ -412,11 +428,15 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
         )
         self.assertIn("runs-on: ubuntu-latest", job)
         self.assertIn("permissions: actions: read contents: write", compact)
-        self.assertNotIn("GITBASH_RELEASE_TOKEN", job)
+        # The release credential is needed to push upstream's workflow files,
+        # but only the checkout step may see it.
+        self.assertEqual(job.count("secrets.GITBASH_RELEASE_TOKEN"), 1)
         self.assertIn(f"uses: actions/checkout@{CHECKOUT_SHA}", job)
         self.assertIn("ref: main", job)
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn("token: ${{ github.token }}", job)
+        self.assertIn(
+            "token: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}", job
+        )
         self.assertIn(f"uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA}", job)
         self.assertIn("name: ${{ needs.sync.outputs.source_bundle_artifact }}", job)
 
@@ -426,6 +446,10 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
             "if: ${{ steps.prepare.outputs.already_advanced != 'true' }}", push_step
         )
         self.assertIn(EXPLICIT_LEASE_PUSH, push)
+        # A missing `workflow` permission is permanent, so it must not burn
+        # retries, and it must not fail a pipeline that published fine.
+        self.assertIn("refusing to allow", push)
+        self.assertIn("::warning::Skipped the main fast-forward", push)
         self.assertEqual(push.count("git push "), 1)
         self.assertIsNone(re.search(r"(?:^|\s)--force(?:\s|$)", push))
 
@@ -597,6 +621,23 @@ class GitBashUpstreamWorkflowFixtureTest(unittest.TestCase):
             )
             self.assertEqual(fixture.remote_main(), fixture.source_sha)
 
+    def test_missing_workflow_permission_warns_without_failing(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            fixture = GitRepositoryFixture(Path(temp_dir))
+            self.run_bundle_block(fixture)
+            advance = fixture.clone_for_advance()
+            prepare = self.run_prepare_block(fixture, advance)
+            self.assertEqual(prepare.returncode, 0, prepare.stderr)
+
+            fixture.reject_workflow_pushes()
+            push = self.run_push_block(fixture, advance)
+
+            # The release is already published, so a permission problem is
+            # reported rather than failing the run, and main stays untouched.
+            self.assertEqual(push.returncode, 0, push.stdout + push.stderr)
+            self.assertIn("::warning::Skipped the main fast-forward", push.stdout)
+            self.assertEqual(fixture.remote_main(), fixture.patch_base_sha)
+
     def test_remote_race_rejects_push_and_preserves_competing_main(self) -> None:
         with TemporaryDirectory() as temp_dir:
             fixture = GitRepositoryFixture(Path(temp_dir))
@@ -691,6 +732,7 @@ class GitBashUpstreamWorkflowFixtureTest(unittest.TestCase):
                 "SOURCE_SHA_FULL": fixture.source_sha,
                 "ADVANCE_PUSH_ATTEMPTS": "1",
                 "ADVANCE_PUSH_RETRY_SECONDS": "0",
+                "GITHUB_STEP_SUMMARY": "summary.md",
             },
         )
 
