@@ -526,8 +526,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Fresh checkout plus an explicit full-OID lease makes advancement a
-    # compare-and-swap. A concurrent main update is preserved; only transient
-    # workflow-validation push timeouts are retried with the same lease.
+    # compare-and-swap: a concurrent main update is preserved, never
+    # overwritten. Pushing a rebase that carries upstream workflow files needs
+    # a credential with the `workflow` permission (see the checkout step).
     permissions:
       actions: read
       contents: write
@@ -538,7 +539,12 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ github.token }}
+          # Rebasing onto upstream inevitably carries upstream's own workflow
+          # files, and GitHub refuses pushes that touch `.github/workflows`
+          # unless the credential holds the `workflow` permission, which the
+          # ephemeral job token can never have. Use the release PAT when it is
+          # configured with that permission.
+          token: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}
 
       - name: Download rebased source bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -605,7 +611,7 @@ jobs:
             echo "- Current main: \`$current_main\`"
             echo "- Verified rebased source: \`$SOURCE_SHA_FULL\`"
             echo "- Already advanced (push is a no-op): \`$already_advanced\`"
-            echo "- Safety: full expected patch-baseline OID lease; transient push-validation timeouts retry, races stay rejected"
+            echo "- Safety: full expected patch-baseline OID lease; a concurrent main update is rejected, never overwritten"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Advance main with exact compare-and-swap
@@ -618,11 +624,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # GitHub intermittently rejects pushes that touch workflow files with a
-          # transient validation timeout even though the token has write access.
-          # The lease is an exact-OID compare-and-swap, so retrying is safe: every
-          # attempt revalidates the expected baseline, and a concurrent main
-          # update keeps being rejected instead of overwritten.
+          # The lease is an exact-OID compare-and-swap, so retrying is safe:
+          # every attempt revalidates the expected baseline, and a concurrent
+          # main update keeps being rejected instead of overwritten. Retries
+          # only help against transient remote errors; a missing `workflow`
+          # permission is permanent and reported immediately.
           push_log="$(mktemp)"
           trap 'rm -f "$push_log"' EXIT
           attempts="${ADVANCE_PUSH_ATTEMPTS:-5}"
@@ -634,6 +640,23 @@ jobs:
             fi
             echo "Advance push attempt $attempt failed. Remote output:"
             cat "$push_log"
+            if grep -q 'refusing to allow' "$push_log"; then
+              # Nothing published is affected and the next run rebases from the
+              # unchanged baseline, so this is reported without failing the
+              # pipeline. Granting the permission turns the fast-forward on.
+              echo "::warning::Skipped the main fast-forward: the credential may not update .github/workflows. Give the GITBASH_RELEASE_TOKEN secret the Workflows: write permission (fine-grained PAT) or the workflow scope (classic PAT)."
+              {
+                echo
+                echo "> [!NOTE]"
+                echo "> The release was published, but \`main\` was **not** fast-forwarded to"
+                echo "> \`$SOURCE_SHA_FULL\`. Pushing a rebase that carries upstream's"
+                echo "> \`.github/workflows\` files needs a credential with the workflow"
+                echo "> permission. Grant \`GITBASH_RELEASE_TOKEN\` **Workflows: write**"
+                echo "> (fine-grained PAT) or the \`workflow\` scope (classic PAT), or"
+                echo "> fast-forward main by hand."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             if [[ "$attempt" -eq "$attempts" ]]; then
               echo "::error::Advance push rejected after $attempts attempts."
               exit 1
