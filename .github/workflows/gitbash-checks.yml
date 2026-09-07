@@ -1,0 +1,139 @@
+name: Git Bash fork checks
+
+# Fast checks for the fork-specific pieces: the release workflow, the launcher
+# and the Git Bash shell discovery. The full CLI is compiled and smoke-tested by
+# the release pipeline, which is far too slow to run on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gitbash-*.yml"
+      - ".github/scripts/test_gitbash_*.py"
+      - "gitbash/**"
+      - "codex-rs/shell-command/**"
+      - "codex-rs/core/src/tools/handlers/shell_spec*.rs"
+      - "codex-rs/core/src/tools/spec_plan*.rs"
+      - "codex-rs/config/src/types.rs"
+  pull_request:
+    paths:
+      - ".github/workflows/gitbash-*.yml"
+      - ".github/scripts/test_gitbash_*.py"
+      - "gitbash/**"
+      - "codex-rs/shell-command/**"
+      - "codex-rs/core/src/tools/handlers/shell_spec*.rs"
+      - "codex-rs/core/src/tools/spec_plan*.rs"
+      - "codex-rs/config/src/types.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-tests:
+    name: Workflow and launcher tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Lint the shell scripts
+        run: shellcheck --severity=warning gitbash/codex-gitbash.sh gitbash/fetch-rusty-v8.sh
+
+      - name: fetch-rusty-v8 resolves the locked crate version
+        run: |
+          set -euo pipefail
+          expected="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
+          resolved="$(awk '/^name = "v8"$/ { found = 1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' codex-rs/Cargo.lock)"
+          test "$resolved" = "$expected"
+
+          # Pre-seeded files skip the download; only version resolution,
+          # checksum verification and the printed exports are exercised.
+          dir="$(mktemp -d)"
+          archive=rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.lib.gz
+          binding=src_binding_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.rs
+          printf 'placeholder' > "$dir/$archive"
+          printf 'placeholder' > "$dir/$binding"
+          (cd "$dir" && sha256sum "$archive" "$binding" > rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.sha256)
+          output="$(./gitbash/fetch-rusty-v8.sh x86_64-pc-windows-msvc "$dir")"
+          echo "$output"
+          grep -q "^export RUSTY_V8_ARCHIVE=" <<< "$output"
+          grep -q "^export RUSTY_V8_SRC_BINDING_PATH=" <<< "$output"
+
+      - name: Run workflow unit tests
+        run: python3 -m unittest discover -s .github/scripts -p 'test_gitbash_*.py' -v
+
+  launcher-windows:
+    name: Launcher smoke test on Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Launcher reports a missing executable clearly
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ./gitbash/codex-gitbash.sh --version 2>error.log; then
+            echo "::error::Launcher should fail without a Codex executable."
+            exit 1
+          fi
+          grep -q "no Codex executable found" error.log
+
+      - name: Launcher passes the Git Bash config override and arguments through
+        shell: bash
+        run: |
+          set -euo pipefail
+          # git accepts `-c key=value` overrides exactly like codex does, so it
+          # doubles as a stand-in executable for the packaged layout.
+          git_exe="$(command -v git)"
+          test -x "$git_exe"
+          CODEX_GITBASH_EXE="$git_exe" ./gitbash/codex-gitbash.sh --version | tee version.log
+          grep -q '^git version' version.log
+
+  shell-detection-windows:
+    name: Git Bash detection tests on Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Read the Rust toolchain pinned by upstream
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' codex-rs/rust-toolchain.toml)"
+          test -n "$channel"
+          printf 'channel=%s\n' "$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - name: Restore Cargo registry and dependency build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          prefix-key: gitbash-checks-v1
+          cache-on-failure: true
+
+      - name: Test Git Bash shell discovery
+        # `codex-shell-command` owns `git_bash_shell` and pulls in no V8, so it
+        # compiles in a couple of minutes. The heavier `codex-core` tool-spec
+        # tests run in the release pipeline's full build.
+        #
+        # CODEX_REQUIRE_GIT_BASH makes the discovery integration test fail
+        # instead of skip: the runner does have Git for Windows installed.
+        working-directory: codex-rs
+        shell: bash
+        env:
+          CODEX_REQUIRE_GIT_BASH: "1"
+        run: cargo test -p codex-shell-command -- --nocapture
