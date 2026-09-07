@@ -1,81 +1,194 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex Git Bash for Windows
 
----
+[![Build Codex Git Bash for Windows](https://github.com/zlinwzx147258/codex-gitbash/actions/workflows/gitbash-upstream-build.yml/badge.svg)](https://github.com/zlinwzx147258/codex-gitbash/actions/workflows/gitbash-upstream-build.yml)
+[![Latest release](https://img.shields.io/github/v/release/zlinwzx147258/codex-gitbash?label=release&sort=date)](https://github.com/zlinwzx147258/codex-gitbash/releases/latest)
 
-## Quickstart
+> [!IMPORTANT]
+> **Unofficial downstream build.** This is a Windows-focused fork of
+> [OpenAI Codex](https://github.com/openai/codex) that lets the Codex CLI run
+> its agent commands through **Git for Windows Bash** instead of PowerShell.
+> It is not an OpenAI-maintained distribution: product features, sign-in,
+> billing, terms of use and support all come from upstream.
 
-### Installing and running Codex CLI
+[中文文档](README.zh-CN.md) · [Reference](docs/git-bash.md) · [Latest release](https://github.com/zlinwzx147258/codex-gitbash/releases/latest) · [Upstream Codex](https://github.com/openai/codex)
 
-Run the following on Mac or Linux to install Codex CLI:
+## Why
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+On Windows, Codex runs its `exec_command` tool through PowerShell. If your
+day-to-day work happens in Git Bash (POSIX paths, GNU coreutils, shell
+scripts), the model has to translate every command and frequently gets it
+wrong. This fork adds a single configuration option:
+
+```toml
+[windows]
+agent_shell = "git-bash"   # default: "power-shell"
 ```
 
-Run the following on Windows to install Codex CLI:
+When it is enabled, Codex:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+- resolves the `bash.exe` of a real **Git for Windows** install (the one on
+  `PATH` first, then the standard install locations), never WSL or a Microsoft
+  Store app-execution alias;
+- runs every agent command in that shell;
+- tells the model to use POSIX syntax and `/c/...` style paths, with Git Bash
+  specific safety rules instead of the PowerShell ones.
+
+Everything else is unchanged upstream Codex.
+
+## Install and run
+
+1. Download `codex-gitbash-windows-x64-<source>.zip` from the
+   [latest release](https://github.com/zlinwzx147258/codex-gitbash/releases/latest).
+2. Extract it anywhere you like, for example `~/apps/codex-gitbash`.
+3. Open **Git Bash** and start Codex through the launcher:
+
+```bash
+cd ~/apps/codex-gitbash
+./codex-gitbash.sh
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+`codex-gitbash.sh` starts the bundled `codex-gitbash.exe` with
+`windows.agent_shell = "git-bash"` applied for that one run. Every other
+argument is passed straight to Codex:
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```bash
+./codex-gitbash.sh --dangerously-bypass-approvals-and-sandbox
+./codex-gitbash.sh exec "summarize this repo"
 ```
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+Optional alias so that `codex-gitbash` works from any directory:
+
+```bash
+echo "alias codex-gitbash='$HOME/apps/codex-gitbash/codex-gitbash.sh'" >> ~/.bashrc
+source ~/.bashrc
 ```
 
-Codex CLI can also be installed via the following package managers:
+Notes:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+- The build shares the normal `~/.codex` user state (sign-in, `config.toml`,
+  plugins, skills, hooks, MCP servers) with an official Codex CLI install and
+  does not replace an installed `codex` command.
+- To make Git Bash the default without the launcher, add the `[windows]`
+  snippet above to `~/.codex/config.toml` and run `codex-gitbash.exe`
+  directly.
+- Requirements: 64-bit Windows 10/11 and [Git for Windows](https://gitforwindows.org/).
+  The binaries are not code-signed, so SmartScreen may ask once.
+
+### What is in the archive
+
+| File                              | Purpose                                                       |
+| --------------------------------- | ------------------------------------------------------------- |
+| `codex-gitbash.sh`                | Launcher; selects Git Bash and starts the CLI                 |
+| `codex-gitbash.exe`               | Patched Codex CLI (`codex.exe` renamed to avoid PATH clashes) |
+| `codex-code-mode-host.exe`        | Code Mode helper, resolved next to the CLI                    |
+| `codex-command-runner.exe`        | Windows sandbox helper, resolved next to the CLI              |
+| `codex-windows-sandbox-setup.exe` | Windows sandbox helper, resolved next to the CLI              |
+| `BUILD-METADATA.txt`              | Codex version, upstream commit, rebased source commit         |
+| `SHA256SUMS.txt`                  | Checksums; verify with `sha256sum -c SHA256SUMS.txt`          |
+
+## How the automation works
+
+The [Build Codex Git Bash for Windows](.github/workflows/gitbash-upstream-build.yml)
+workflow runs daily at 03:17 UTC (11:17 China Standard Time) and can be started
+manually from the **Actions** tab:
+
+1. **sync** rebases this fork's patch onto the current `openai/codex` `main`.
+   Nothing happens if upstream did not move.
+2. **build** compiles the rebased source for `x86_64-pc-windows-msvc` with the
+   Rust toolchain pinned by upstream, then smoke-tests the result through the
+   launcher. A cold build takes about 90 minutes; dependency artifacts are
+   cached between runs.
+3. **release** publishes the archive as the latest GitHub release. The tag
+   `gitbash-base-<baseline>-upstream-<upstream>` records the fork commit the
+   patch was taken from and the upstream commit it was rebased onto.
+4. **advance_main** fast-forwards this repository's `main` to the released
+   source with an exact compare-and-swap, so `main` is always
+   "reviewed patch + upstream main". Expect `main` to be rewritten daily; use
+   `git pull --rebase` or re-clone rather than merging.
+5. **report** opens (or updates) an issue titled *Automated Git Bash build is
+   failing* whenever a step fails, including the list of conflicting files
+   when the patch no longer rebases cleanly, and closes it after the next
+   successful run. Nothing broken is ever published.
+
+## Build from source
+
+```bash
+git clone https://github.com/zlinwzx147258/codex-gitbash.git
+cd codex-gitbash
+eval "$(./gitbash/fetch-rusty-v8.sh)"        # prebuilt V8 for the locked crate version
+cd codex-rs
+export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+cargo build --release --bin codex
+cd ..
+./gitbash/codex-gitbash.sh --version
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+You need the Rust toolchain named in `codex-rs/rust-toolchain.toml` (rustup
+installs it automatically) and the MSVC Build Tools. Codex links V8; the
+`fetch-rusty-v8.sh` helper downloads and verifies the prebuilt that upstream
+publishes for the locked `v8` crate version and prints the two environment
+exports the build script needs (the same thing upstream's CI does). The
+launcher finds a local build under `codex-rs/target/`; point
+`CODEX_GITBASH_EXE` at any other `codex.exe` to override. To also use the
+Windows sandbox and Code Mode from a source build, add
+`--bin codex-code-mode-host --bin codex-command-runner --bin codex-windows-sandbox-setup`
+to the build command.
+
+Run the fork's tests with:
+
+```bash
+cd codex-rs
+cargo test -p codex-shell-command
+RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell spec_plan_tests::exec_command_guidance
+python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
 
-Then simply run `codex` to get started.
+## Keeping up with upstream by hand
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+When the daily run reports a rebase conflict:
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+```bash
+git remote add upstream https://github.com/openai/codex.git   # once
+git fetch upstream main
+git rebase upstream/main            # fix conflicts in the fork commits only
+just write-config-schema            # if config types changed
+git push --force-with-lease origin main
+```
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+Then re-run the workflow from the Actions tab. The fork's changes are kept as
+a few focused commits on top of upstream (`feat(windows)`, `ci`, `docs`) so
+conflicts stay small.
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+## What this fork changes
 
-</details>
+| Area                                                              | Change                                                            |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `codex-rs/config/src/types.rs`, `codex-rs/core/config.schema.json` | `[windows].agent_shell = "power-shell" \| "git-bash"`             |
+| `codex-rs/shell-command/src/shell_detect.rs`                      | Git for Windows Bash discovery (`git_bash_shell`)                 |
+| `codex-rs/core/src/session/session.rs`                            | Selects Git Bash as the session shell when configured             |
+| `codex-rs/core/src/tools/…/shell_spec.rs`, `spec_plan.rs`         | Git Bash variant of the `exec_command` description and safety rules |
+| `gitbash/`                                                        | Launcher, package README and the `fetch-rusty-v8.sh` build helper |
+| `.github/workflows/gitbash-*.yml`, `.github/scripts/test_gitbash_*.py` | Daily rebase, build, release and tracking-issue automation with tests |
 
-### Using Codex with your ChatGPT plan
+Documentation for the option itself lives in [docs/git-bash.md](docs/git-bash.md).
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+## Troubleshooting
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+- **`run this script from Git Bash`** – the launcher relies on Git for
+  Windows' MSYS environment (`cygpath`); it does not work from WSL, cmd or
+  PowerShell.
+- **`windows.agent_shell is set to git-bash, but Git Bash could not be found`** –
+  install [Git for Windows](https://gitforwindows.org/) or make sure its
+  `git.exe` is on `PATH`; portable installs are found through `PATH`.
+- **`no Codex executable found`** – keep `codex-gitbash.sh` next to
+  `codex-gitbash.exe`, or set `CODEX_GITBASH_EXE`.
+- **The model still writes PowerShell** – check that Codex is really running
+  with the option (the `exec_command` tool description starts with
+  "Windows safety rules (Git Bash)"), and that no `windows.agent_shell`
+  override in a profile or `-c` flag switches it back.
 
-## Docs
+## License
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Apache-2.0, unchanged from upstream. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE). For everything about Codex itself use the
+[official documentation](https://developers.openai.com/codex).
