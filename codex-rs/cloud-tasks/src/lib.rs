@@ -1,3 +1,7 @@
+// Computing the layout of the app-server's instrumented `dispatch` async block
+// exceeds the default limit of 128; `codex-app-server` raises it for the same
+// reason.
+#![recursion_limit = "256"]
 mod app;
 mod cli;
 pub(crate) mod env_detect;
