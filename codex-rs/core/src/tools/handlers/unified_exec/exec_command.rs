@@ -37,6 +37,7 @@ use codex_utils_path_uri::PathUri;
 use codex_utils_string::truncate_middle_chars;
 
 use super::super::shell_spec::CommandToolOptions;
+use super::super::shell_spec::WindowsShellKind;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
 use super::ExecCommandArgs;
 use super::ExecCommandWorkdirArgs;
@@ -53,6 +54,7 @@ pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
     pub(crate) include_windows_shell_guidance: bool,
+    pub(crate) windows_shell_kind: WindowsShellKind,
 }
 
 pub struct ExecCommandHandler {
@@ -69,6 +71,7 @@ impl Default for ExecCommandHandler {
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
                 include_windows_shell_guidance: cfg!(windows),
+                windows_shell_kind: WindowsShellKind::PowerShell,
             },
         }
     }
@@ -99,6 +102,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         let spec = create_exec_command_tool_with_environment_id(
             CommandToolOptions {
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+                windows_shell_kind: self.options.windows_shell_kind,
             },
             self.options.include_environment_id,
             self.options.include_windows_shell_guidance,
