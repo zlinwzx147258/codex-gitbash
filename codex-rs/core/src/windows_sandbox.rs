@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::config::edit::ConfigEditsBuilder;
 use codex_config::config_toml::ConfigToml;
+use codex_config::types::WindowsAgentShellToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_features::Feature;
 use codex_features::Features;
@@ -85,6 +86,10 @@ pub fn resolve_windows_sandbox_mode(cfg: &ConfigToml) -> Option<WindowsSandboxMo
         .as_ref()
         .and_then(|windows| windows.sandbox)
         .or_else(|| legacy_windows_sandbox_mode(cfg.features.as_ref()))
+}
+
+pub fn resolve_windows_agent_shell(cfg: &ConfigToml) -> Option<WindowsAgentShellToml> {
+    cfg.windows.as_ref().and_then(|windows| windows.agent_shell)
 }
 
 pub fn legacy_windows_sandbox_mode(
