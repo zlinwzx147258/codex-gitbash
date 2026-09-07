@@ -61,6 +61,7 @@ yarn-error.log*
 .vercel/
 .netlify/
 /.tmp/sdk-ci/
+/.tmp/rusty_v8/
 /upstream-rusty-v8/
 
 # patches
