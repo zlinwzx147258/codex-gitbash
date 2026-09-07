@@ -503,7 +503,7 @@ fn has_windows_shell_guidance(spec: &ToolSpec) -> bool {
     let ToolSpec::Function(tool) = spec else {
         return false;
     };
-    tool.description.contains("Windows safety rules:")
+    tool.description.contains("Windows safety rules")
 }
 
 fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
@@ -945,6 +945,63 @@ async fn exec_command_guidance_follows_executor_platform_and_fallbacks() {
             has_windows_shell_guidance(plan.visible_spec("exec_command")),
             expect_windows_guidance,
             "unexpected guidance for executor platform {platform_os:?} with multiple_environments={multiple_environments}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exec_command_guidance_describes_the_environment_shell_on_windows() {
+    use std::path::PathBuf;
+
+    let git_bash = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::Bash,
+        shell_path: PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+    };
+    let powershell = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::PowerShell,
+        shell_path: PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+    };
+    for (shell, multiple_environments, expect_git_bash) in [
+        (Some(git_bash.clone()), false, true),
+        (Some(powershell.clone()), false, false),
+        (None, false, false),
+        (Some(git_bash.clone()), true, false),
+    ] {
+        let plan = probe(|turn| {
+            set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+            set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).shell_type =
+                    ConfigShellToolType::UnifiedExec;
+            });
+            let TurnEnvironmentState::Ready(environment) = turn
+                .environments
+                .environments
+                .first_mut()
+                .expect("primary environment")
+            else {
+                panic!("primary environment should be ready");
+            };
+            environment.executor_platform_os = Some("windows".to_string());
+            environment.shell = shell.clone();
+            if multiple_environments {
+                duplicate_primary_environment(turn);
+            }
+        })
+        .await;
+
+        let ToolSpec::Function(tool) = plan.visible_spec("exec_command") else {
+            panic!("exec_command should be a function tool");
+        };
+        assert!(
+            has_windows_shell_guidance(plan.visible_spec("exec_command")),
+            "Windows guidance should be present for shell {shell:?}"
+        );
+        assert_eq!(
+            tool.description
+                .contains("Windows safety rules (Git Bash):"),
+            expect_git_bash,
+            "unexpected shell dialect for shell {shell:?} with multiple_environments={multiple_environments}"
         );
     }
 }
