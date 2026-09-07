@@ -1,4 +1,6 @@
 use super::*;
+use codex_config::types::WindowsAgentShellToml;
+use codex_config::types::WindowsToml;
 use codex_features::Features;
 use codex_features::FeaturesToml;
 use codex_network_proxy::NetworkProxyConfig;
@@ -124,6 +126,22 @@ fn provisioning_settings_omit_the_disabled_socks_proxy() {
 }
 
 #[test]
+fn resolve_windows_agent_shell_reads_explicit_cfg_value() {
+    let cfg = ConfigToml {
+        windows: Some(WindowsToml {
+            agent_shell: Some(WindowsAgentShellToml::GitBash),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        resolve_windows_agent_shell(&cfg),
+        Some(WindowsAgentShellToml::GitBash)
+    );
+}
+
+#[test]
 fn provisioning_settings_are_empty_when_managed_network_is_disabled() {
     let spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
@@ -136,4 +154,23 @@ fn provisioning_settings_are_empty_when_managed_network_is_disabled() {
         provisioning_settings(Some(&spec)).expect("provisioning settings should resolve"),
         codex_windows_sandbox::WindowsSandboxProvisioningSettings::default()
     );
+}
+
+#[test]
+fn windows_agent_shell_deserializes_and_defaults_to_none() {
+    let git_bash: ConfigToml = toml::from_str(
+        r#"
+[windows]
+agent_shell = "git-bash"
+"#,
+    )
+    .expect("Git Bash agent-shell config should deserialize");
+    assert_eq!(
+        resolve_windows_agent_shell(&git_bash),
+        Some(WindowsAgentShellToml::GitBash)
+    );
+
+    let omitted: ConfigToml =
+        toml::from_str("[windows]").expect("windows config without agent_shell should deserialize");
+    assert_eq!(resolve_windows_agent_shell(&omitted), None);
 }

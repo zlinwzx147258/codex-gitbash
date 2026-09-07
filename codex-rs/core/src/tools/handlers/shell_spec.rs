@@ -5,10 +5,21 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+/// Windows shell whose conventions the exec tools describe when Windows
+/// guidance is included. Follows the shell the selected environment actually
+/// executes commands with (see `[windows].agent_shell`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowsShellKind {
+    #[default]
+    PowerShell,
+    GitBash,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandToolOptions {
     pub allow_login_shell: bool,
     pub exec_permission_approvals_enabled: bool,
+    pub windows_shell_kind: WindowsShellKind,
 }
 
 #[cfg(test)]
@@ -97,7 +108,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         description: if include_windows_shell_guidance {
             format!(
                 "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
-                windows_shell_guidance()
+                windows_shell_guidance(options.windows_shell_kind)
             )
         } else {
             "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
@@ -336,11 +347,23 @@ fn file_system_permissions_schema() -> JsonSchema {
     schema
 }
 
-fn windows_shell_guidance() -> &'static str {
-    r#"Windows safety rules:
+fn windows_shell_guidance(kind: WindowsShellKind) -> &'static str {
+    match kind {
+        WindowsShellKind::PowerShell => {
+            r#"Windows safety rules:
 - Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
 - When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control."#
+        }
+        WindowsShellKind::GitBash => {
+            r#"Windows safety rules (Git Bash):
+- Commands run in Git for Windows Bash (MSYS2), not PowerShell or cmd.exe. Use POSIX shell syntax end-to-end: `ls -a`, `find . -name '*.py'`, `grep -r 'TODO' .`, `export FOO='bar'; echo "$FOO"`, and quoted heredocs for inline scripts.
+- Do not compose destructive filesystem commands across shells. Do not enumerate paths in Bash and then pass them to PowerShell, `cmd /c`, or batch builtins for deletion or moving; stay in Bash and prefer `rm`, `mv`, and `find ... -delete` with quoted, explicit paths.
+- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
+- Prefer POSIX-style paths such as `/c/Users/...` for Bash tools; pass Windows-style paths (for example via `cygpath -w`) only when invoking native Windows programs that require them.
+- To launch a long-running helper in the background, redirect its output to a file and run it with `&`; do not open visible console windows unless the user explicitly asked for one."#
+        }
+    }
 }
 
 #[cfg(test)]
