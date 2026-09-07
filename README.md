@@ -104,11 +104,29 @@ manually from the **Actions** tab:
 4. **advance_main** fast-forwards this repository's `main` to the released
    source with an exact compare-and-swap, so `main` is always
    "reviewed patch + upstream main". Expect `main` to be rewritten daily; use
-   `git pull --rebase` or re-clone rather than merging.
+   `git pull --rebase` or re-clone rather than merging. This step needs a
+   credential with the workflow permission (see below); without it the run
+   still succeeds and only warns that the fast-forward was skipped.
 5. **report** opens (or updates) an issue titled *Automated Git Bash build is
    failing* whenever a step fails, including the list of conflicting files
    when the patch no longer rebases cleanly, and closes it after the next
    successful run. Nothing broken is ever published.
+
+### Repository setup the pipeline expects
+
+- **Issues enabled**, so the tracking issue can be filed.
+- A `GITBASH_RELEASE_TOKEN` secret holding a token with **Contents: write**
+  and **Workflows: write** (a classic PAT needs `repo` and `workflow`).
+  Publishing falls back to the built-in job token, but only a token with the
+  workflow permission may push a rebase that carries upstream's own
+  `.github/workflows` files, which is what step 4 does. Without that
+  permission everything is still built and published; the run summary just
+  notes that `main` was not fast-forwarded, and you can do it by hand:
+
+  ```bash
+  git fetch upstream main && git rebase upstream/main
+  git push --force-with-lease origin main
+  ```
 
 ## Build from source
 

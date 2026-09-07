@@ -95,10 +95,25 @@ source ~/.bashrc
    变基到了哪个上游提交。
 4. **advance_main**：用精确的 compare-and-swap 把本仓库的 `main` 快进到已发布的
    源码，因此 `main` 始终等于“已审核的补丁 + 上游 main”。`main` 每天都会被
-   重写，本地请用 `git pull --rebase` 或重新 clone，不要 merge。
+   重写，本地请用 `git pull --rebase` 或重新 clone，不要 merge。这一步需要具备
+   workflow 权限的令牌（见下）；没有时整个流程依然成功，只会警告快进被跳过。
 5. **report**：任一步骤失败时自动创建（或更新）标题为
    *Automated Git Bash build is failing* 的 issue，补丁无法干净变基时会列出冲突
    文件；下次成功后自动关闭。坏掉的东西永远不会被发布。
+
+### 仓库需要的配置
+
+- **开启 Issues**，否则无法创建跟踪 issue。
+- 一个 `GITBASH_RELEASE_TOKEN` secret，令牌需要 **Contents: write** 和
+  **Workflows: write** 权限（classic PAT 则是 `repo` 和 `workflow`）。发布本身
+  可以退回到内置的 job token，但第 4 步推送的变基提交会带上游自己的
+  `.github/workflows` 文件，只有具备 workflow 权限的令牌才被允许推送。缺少该权限
+  时构建和发布一切照常，只是运行摘要里会提示 `main` 没有快进，你也可以手动执行：
+
+  ```bash
+  git fetch upstream main && git rebase upstream/main
+  git push --force-with-lease origin main
+  ```
 
 ## 从源码构建
 
