@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -239,6 +241,145 @@ fn get_bash_shell() -> Option<DetectedShell> {
 
 const SH_FALLBACK_PATHS: &[&str] = &["/bin/sh"];
 
+#[cfg(windows)]
+fn git_bash_candidate_paths_for_root(git_root: &Path) -> Vec<PathBuf> {
+    vec![
+        git_root.join("bin").join("bash.exe"),
+        git_root.join("usr").join("bin").join("bash.exe"),
+    ]
+}
+
+#[cfg(windows)]
+fn is_git_for_windows_root(git_root: &Path) -> bool {
+    [
+        git_root.join("cmd").join("git.exe"),
+        git_root.join("bin").join("git.exe"),
+        git_root.join("mingw64").join("bin").join("git.exe"),
+        git_root.join("usr").join("bin").join("git.exe"),
+    ]
+    .into_iter()
+    .any(|path| file_exists(&path).is_some())
+}
+
+#[cfg(windows)]
+fn git_root_for_executable(git_executable: &Path) -> Option<PathBuf> {
+    git_executable
+        .ancestors()
+        .skip(1)
+        // Git for Windows puts git.exe at most three levels below its install
+        // root: `cmd`, `bin`, or `mingw64\bin`.
+        .take(3)
+        .find(|candidate| is_git_for_windows_root(candidate))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(windows)]
+fn git_roots_on_path() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("git.exe"))
+        .filter_map(|git_executable| {
+            file_exists(&git_executable)
+                .as_deref()
+                .and_then(git_root_for_executable)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn git_root_for_bash_executable(bash_executable: &Path) -> Option<PathBuf> {
+    let bin_dir = bash_executable.parent()?;
+    if !bin_dir
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("bin")
+    {
+        return None;
+    }
+
+    let parent = bin_dir.parent()?;
+    if parent
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("usr"))
+    {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
+#[cfg(windows)]
+fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+    // Windows paths are case-insensitive; PATH and the environment variables
+    // frequently spell the same install root differently.
+    if !paths
+        .iter()
+        .any(|existing| existing.as_os_str().eq_ignore_ascii_case(candidate.as_os_str()))
+    {
+        paths.push(candidate);
+    }
+}
+
+#[cfg(windows)]
+fn git_bash_candidate_paths() -> Vec<PathBuf> {
+    // Prefer the Git installation the user actually runs (first on PATH), then
+    // the standard per-user and machine-wide install locations.
+    let mut roots = git_roots_on_path();
+    if let Some(local_app_data) = std::env::var_os("LocalAppData") {
+        roots.push(PathBuf::from(local_app_data).join("Programs").join("Git"));
+    }
+    for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(program_files) = std::env::var_os(variable) {
+            roots.push(PathBuf::from(program_files).join("Git"));
+        }
+    }
+
+    // Keep deterministic fallback paths for environments that do not expose the
+    // standard Windows environment variables (for example stripped-down shells).
+    roots.extend([
+        PathBuf::from(r"C:\Program Files\Git"),
+        PathBuf::from(r"C:\Program Files (x86)\Git"),
+    ]);
+
+    let mut candidates = Vec::new();
+    for root in roots {
+        for candidate in git_bash_candidate_paths_for_root(&root) {
+            push_unique_path(&mut candidates, candidate);
+        }
+    }
+    candidates
+}
+
+/// Resolves Git for Windows' Bash executable without consulting a generic
+/// `bash` lookup, which could otherwise select WSL or an app-execution alias.
+///
+/// Always returns `None` on non-Windows platforms.
+pub fn git_bash_shell() -> Option<DetectedShell> {
+    #[cfg(windows)]
+    {
+        git_bash_candidate_paths()
+            .into_iter()
+            .find_map(|path| {
+                let git_root = git_root_for_bash_executable(&path)?;
+                is_git_for_windows_root(&git_root)
+                    .then(|| file_exists(&path))
+                    .flatten()
+            })
+            .map(|shell_path| DetectedShell {
+                shell_type: ShellType::Bash,
+                shell_path,
+            })
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 fn get_sh_shell() -> Option<DetectedShell> {
     let shell_path = get_shell_path(ShellType::Sh, "sh", SH_FALLBACK_PATHS);
 
@@ -373,6 +514,65 @@ pub fn default_user_shell_from_path(user_shell_path: Option<PathBuf>) -> Detecte
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_candidates_include_standard_git_for_windows_paths() {
+        let candidates = git_bash_candidate_paths();
+        assert!(candidates.contains(&PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")));
+        assert!(candidates.contains(&PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_candidates_are_unique_ignoring_case() {
+        let candidates = git_bash_candidate_paths();
+        for (index, candidate) in candidates.iter().enumerate() {
+            assert!(
+                !candidates[index + 1..].iter().any(|other| other
+                    .as_os_str()
+                    .eq_ignore_ascii_case(candidate.as_os_str())),
+                "duplicate Git Bash candidate: {}",
+                candidate.display()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_candidates_support_a_custom_git_install_root() {
+        let root = PathBuf::from(r"D:\tools\PortableGit");
+        assert_eq!(
+            git_bash_candidate_paths_for_root(&root),
+            vec![
+                root.join("bin").join("bash.exe"),
+                root.join("usr").join("bin").join("bash.exe"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_root_is_derived_from_the_bash_layout() {
+        assert_eq!(
+            git_root_for_bash_executable(Path::new(r"D:\tools\PortableGit\usr\bin\bash.exe")),
+            Some(PathBuf::from(r"D:\tools\PortableGit"))
+        );
+        assert_eq!(
+            git_root_for_bash_executable(Path::new(r"D:\tools\PortableGit\bin\bash.exe")),
+            Some(PathBuf::from(r"D:\tools\PortableGit"))
+        );
+        assert_eq!(
+            git_root_for_bash_executable(Path::new(r"C:\Windows\System32\bash.exe")),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn git_bash_shell_is_unavailable_off_windows() {
+        assert_eq!(git_bash_shell(), None);
+    }
 
     #[test]
     fn elevated_sandbox_filter_rejects_store_and_script_powershell_paths() {

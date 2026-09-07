@@ -3,7 +3,7 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 fn windows_shell_guidance_description() -> String {
-    format!("\n\n{}", windows_shell_guidance())
+    format!("\n\n{}", windows_shell_guidance(WindowsShellKind::PowerShell))
 }
 
 fn has_parameter(tool: &ToolSpec, parameter_name: &str) -> bool {
@@ -18,6 +18,7 @@ fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
+        windows_shell_kind: WindowsShellKind::PowerShell,
     });
 
     let description = if cfg!(windows) {
@@ -104,6 +105,7 @@ fn exec_command_tool_can_hide_shell_parameter() {
         CommandToolOptions {
             allow_login_shell: true,
             exec_permission_approvals_enabled: false,
+            windows_shell_kind: WindowsShellKind::PowerShell,
         },
         /*include_environment_id*/ false,
         /*include_shell_parameter*/ false,
@@ -112,6 +114,59 @@ fn exec_command_tool_can_hide_shell_parameter() {
 
     assert!(!has_parameter(&tool, "shell"));
     assert!(has_parameter(&tool, "cmd"));
+}
+
+fn exec_command_description(
+    windows_shell_kind: WindowsShellKind,
+    include_windows_shell_guidance: bool,
+) -> String {
+    let tool = create_exec_command_tool_with_environment_id(
+        CommandToolOptions {
+            allow_login_shell: true,
+            exec_permission_approvals_enabled: false,
+            windows_shell_kind,
+        },
+        /*include_environment_id*/ false,
+        /*include_shell_parameter*/ true,
+        include_windows_shell_guidance,
+    );
+    let ToolSpec::Function(tool) = tool else {
+        panic!("exec_command must be a function tool");
+    };
+    tool.description
+}
+
+#[test]
+fn exec_command_tool_describes_git_bash_when_selected() {
+    let description = exec_command_description(
+        WindowsShellKind::GitBash,
+        /*include_windows_shell_guidance*/ true,
+    );
+
+    assert!(description.contains("Windows safety rules (Git Bash):"));
+    assert!(description.contains("POSIX shell syntax"));
+    assert!(!description.contains("Remove-Item"));
+}
+
+#[test]
+fn exec_command_tool_keeps_powershell_guidance_by_default() {
+    let description = exec_command_description(
+        WindowsShellKind::PowerShell,
+        /*include_windows_shell_guidance*/ true,
+    );
+
+    assert!(description.contains("Windows safety rules:"));
+    assert!(description.contains("Remove-Item"));
+    assert!(!description.contains("Git Bash"));
+}
+
+#[test]
+fn exec_command_tool_omits_shell_guidance_when_not_requested() {
+    for kind in [WindowsShellKind::PowerShell, WindowsShellKind::GitBash] {
+        let description =
+            exec_command_description(kind, /*include_windows_shell_guidance*/ false);
+        assert!(!description.contains("Windows safety rules"));
+    }
 }
 
 #[test]
