@@ -1,0 +1,729 @@
+name: Build Codex Git Bash for Windows
+
+# Daily pipeline that keeps this fork's Git Bash patch on top of openai/codex:
+#
+#   sync (ubuntu)   rebase the patch onto upstream main, decide whether a build
+#                   is needed and export the exact rebased source as a bundle
+#   build (windows) compile the rebased source, smoke-test it, package it
+#   release         publish the archive as the latest GitHub release
+#   advance_main    fast-forward this repository's main to the released source
+#   report          open/close a tracking issue so failures are never silent
+#
+# `main` is always "reviewed patch + upstream main" and is rewritten by
+# advance_main through an exact compare-and-swap; the release tag records the
+# baseline it was cut from.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build and publish even if this exact source was already released.
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Daily at 03:17 UTC (11:17 China Standard Time). Skips the expensive
+    # Windows build when there is nothing new to publish.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitbash-upstream-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: openai/codex
+  RELEASE_TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  sync:
+    name: Rebase Git Bash patch onto upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      rebase_state: ${{ steps.sync.outputs.rebase_state }}
+      conflicted_files: ${{ steps.sync.outputs.conflicted_files }}
+      should_build: ${{ steps.sync.outputs.should_build }}
+      should_advance: ${{ steps.sync.outputs.should_advance }}
+      patch_base_sha: ${{ steps.sync.outputs.patch_base_sha }}
+      source_sha: ${{ steps.sync.outputs.source_sha }}
+      source_sha_full: ${{ steps.sync.outputs.source_sha_full }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      upstream_date: ${{ steps.sync.outputs.upstream_date }}
+      artifact_name: ${{ steps.sync.outputs.artifact_name }}
+      archive_name: ${{ steps.sync.outputs.archive_name }}
+      source_bundle_artifact: ${{ steps.sync.outputs.source_bundle_artifact }}
+      source_bundle_name: ${{ steps.sync.outputs.source_bundle_name }}
+      tag: ${{ steps.sync.outputs.tag }}
+
+    steps:
+      - name: Check out the Git Bash patch baseline
+        # `main` in this fork is the reviewed patch baseline. Pinning this ref
+        # prevents a manual workflow-dispatch ref from changing the code built.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase the patch onto openai/codex main
+        id: sync
+        env:
+          # Release discovery is read-only; the ephemeral job token is enough.
+          GH_TOKEN: ${{ github.token }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          patch_base_sha="$(git rev-parse HEAD)"
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/$UPSTREAM_REPOSITORY.git"
+          git fetch --no-tags upstream main
+
+          upstream_sha="$(git rev-parse upstream/main)"
+          upstream_date="$(git log -1 --format=%cs upstream/main)"
+          base_sha="$(git merge-base HEAD upstream/main)"
+          rebase_state=unchanged
+          conflicted_files=""
+          if [[ "$base_sha" != "$upstream_sha" ]]; then
+            echo "Rebasing Git Bash patch onto upstream/main ($upstream_sha)"
+            # A fixed bot identity plus committer-date-is-author-date make the
+            # rebased commit ids reproducible for the same patch and upstream.
+            if git rebase --committer-date-is-author-date upstream/main; then
+              rebase_state=rebased
+            else
+              rebase_state=conflict
+              conflicted_files="$(git diff --name-only --diff-filter=U | sort)"
+              git rebase --abort || true
+            fi
+          fi
+
+          printf 'patch_base_sha=%s\n' "$patch_base_sha" >> "$GITHUB_OUTPUT"
+          printf 'upstream_sha=%s\n' "$upstream_sha" >> "$GITHUB_OUTPUT"
+          printf 'upstream_date=%s\n' "$upstream_date" >> "$GITHUB_OUTPUT"
+          printf 'rebase_state=%s\n' "$rebase_state" >> "$GITHUB_OUTPUT"
+          {
+            echo 'conflicted_files<<CONFLICTS'
+            echo "$conflicted_files"
+            echo 'CONFLICTS'
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$rebase_state" == conflict ]]; then
+            {
+              echo "## Codex Git Bash for Windows upstream check"
+              echo
+              echo "- Patch baseline: \`$patch_base_sha\`"
+              echo "- Upstream main: \`$upstream_sha\`"
+              echo "- Result: **rebase conflict** - the Git Bash patch needs a manual rebase"
+              echo
+              echo '```'
+              echo "$conflicted_files"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The Git Bash patch no longer applies to upstream main $upstream_sha. Conflicts: $(echo "$conflicted_files" | tr '\n' ' ')"
+            exit 1
+          fi
+
+          source_sha_full="$(git rev-parse HEAD)"
+          source_sha="${source_sha_full:0:12}"
+          artifact_name="codex-gitbash-windows-x64-$source_sha"
+          archive_name="$artifact_name.zip"
+          source_bundle_artifact="codex-gitbash-rebased-source-$source_sha"
+          source_bundle_name="$source_bundle_artifact.bundle"
+          tag="gitbash-base-${patch_base_sha:0:12}-upstream-${upstream_sha:0:12}"
+          should_build=false
+          should_advance=false
+          if [[ "$source_sha_full" != "$patch_base_sha" ]]; then
+            should_advance=true
+          fi
+          publication_state='not-checked'
+
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            should_build=true
+            publication_state='forced'
+          else
+            asset_names="$(mktemp)"
+            lookup_error="$(mktemp)"
+            trap 'rm -f "$asset_names" "$lookup_error"' EXIT
+            if gh api --paginate \
+              --jq '.[] | .assets[]?.name' \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              > "$asset_names" 2>"$lookup_error"; then
+              if grep -Fxq "$archive_name" "$asset_names"; then
+                publication_state='already-published'
+              else
+                should_build=true
+                publication_state='source-archive-missing'
+              fi
+            else
+              lookup_status=$?
+              cat "$lookup_error" >&2
+              exit "$lookup_status"
+            fi
+          fi
+
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          printf 'source_sha_full=%s\n' "$source_sha_full" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+          printf 'archive_name=%s\n' "$archive_name" >> "$GITHUB_OUTPUT"
+          printf 'source_bundle_artifact=%s\n' "$source_bundle_artifact" >> "$GITHUB_OUTPUT"
+          printf 'source_bundle_name=%s\n' "$source_bundle_name" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'should_build=%s\n' "$should_build" >> "$GITHUB_OUTPUT"
+          printf 'should_advance=%s\n' "$should_advance" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Codex Git Bash for Windows upstream check"
+            echo
+            echo "- Patch baseline: \`$patch_base_sha\`"
+            echo "- Upstream main: \`$upstream_sha\`"
+            echo "- Rebase: \`$rebase_state\`"
+            echo "- Rebased source: \`$source_sha_full\`"
+            echo "- Publication state: \`$publication_state\`"
+            echo "- Build required: \`$should_build\`"
+            echo "- Advance main after release gate: \`$should_advance\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create and verify rebased source bundle
+        if: ${{ steps.sync.outputs.should_advance == 'true' }}
+        env:
+          PATCH_BASE_SHA: ${{ steps.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ steps.sync.outputs.source_sha_full }}
+          SOURCE_BUNDLE_NAME: ${{ steps.sync.outputs.source_bundle_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_path="source-bundle/$SOURCE_BUNDLE_NAME"
+          actual_source="$(git rev-parse refs/heads/main)"
+          if [[ "$actual_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Local main is $actual_source, expected rebased source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+
+          mkdir -p "$(dirname "$bundle_path")"
+          git bundle create "$bundle_path" refs/heads/main "^$PATCH_BASE_SHA"
+          git bundle verify "$bundle_path"
+          mapfile -t bundle_heads < <(git bundle list-heads "$bundle_path" refs/heads/main)
+          if [[ "${#bundle_heads[@]}" -ne 1 ]]; then
+            echo "::error::Source bundle must advertise exactly one main ref."
+            exit 1
+          fi
+          read -r bundled_source bundled_ref <<< "${bundle_heads[0]}"
+          if [[ "$bundled_ref" != "refs/heads/main" || "$bundled_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Source bundle advertises $bundled_source $bundled_ref, expected $SOURCE_SHA_FULL refs/heads/main."
+            exit 1
+          fi
+
+      - name: Upload rebased source bundle
+        if: ${{ steps.sync.outputs.should_advance == 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.sync.outputs.source_bundle_artifact }}
+          path: source-bundle/${{ steps.sync.outputs.source_bundle_name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build and package Windows x64
+    needs: sync
+    if: ${{ needs.sync.outputs.should_build == 'true' }}
+    runs-on: windows-latest
+    # A cold Windows/MSVC release build takes roughly 90 minutes on hosted
+    # runners; keep headroom for slow runners and cache save time.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the Git Bash patch baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download rebased source bundle
+        if: ${{ needs.sync.outputs.should_advance == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sync.outputs.source_bundle_artifact }}
+          path: source-bundle
+
+      - name: Check out the exact rebased source
+        env:
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          SHOULD_ADVANCE: ${{ needs.sync.outputs.should_advance }}
+          SOURCE_BUNDLE_NAME: ${{ needs.sync.outputs.source_bundle_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main="$(git rev-parse HEAD)"
+          if [[ "$current_main" != "$PATCH_BASE_SHA" ]]; then
+            echo "::error::main moved to $current_main while this run expected baseline $PATCH_BASE_SHA; re-run the workflow."
+            exit 1
+          fi
+          if [[ "$SHOULD_ADVANCE" == "true" ]]; then
+            bundle_path="source-bundle/$SOURCE_BUNDLE_NAME"
+            test -f "$bundle_path"
+            git bundle verify "$bundle_path"
+            git fetch --no-tags "$bundle_path" refs/heads/main
+            actual_source="$(git rev-parse 'FETCH_HEAD^{commit}')"
+            if [[ "$actual_source" != "$SOURCE_SHA_FULL" ]]; then
+              echo "::error::Fetched bundle source is $actual_source, expected $SOURCE_SHA_FULL."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$actual_source"; then
+              echo "::error::Upstream $UPSTREAM_SHA is not an ancestor of source $actual_source."
+              exit 1
+            fi
+            git checkout --detach "$actual_source"
+          elif [[ "$SOURCE_SHA_FULL" != "$PATCH_BASE_SHA" ]]; then
+            echo "::error::No source bundle for rebased source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Checked-out source $(git rev-parse HEAD) does not match expected $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          git log --oneline -1
+
+      - name: Read the Rust toolchain pinned by upstream
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' codex-rs/rust-toolchain.toml)"
+          if [[ -z "$channel" ]]; then
+            echo "::error::Could not read the toolchain channel from codex-rs/rust-toolchain.toml."
+            exit 1
+          fi
+          echo "Using Rust $channel"
+          printf 'channel=%s\n' "$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          targets: ${{ env.RELEASE_TARGET }}
+
+      - name: Configure MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ env.RELEASE_TARGET }}
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        # The `v8` crate's build script downloads a prebuilt V8 that upstream
+        # builds itself (denoland no longer publishes the pointer-compression
+        # sandbox profile). Reuse upstream's own composite action from the
+        # rebased tree so the archive always matches the locked crate version.
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ env.RELEASE_TARGET }}
+
+      - name: Restore Cargo registry and dependency build cache
+        # Caches registry sources and compiled *dependencies* only; workspace
+        # crates are pruned before saving so the cache stays small and valid
+        # across daily upstream changes.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs -> target
+          prefix-key: gitbash-codex-v3
+          key: ${{ env.RELEASE_TARGET }}
+          cache-on-failure: true
+
+      - name: Build patched Codex CLI
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          # The `v8` build script unpacks the prebuilt static library into its
+          # output directory and emits a link path to it. Cache pruning can drop
+          # that library while keeping the fingerprint, which then fails with
+          # "could not find native static library `rusty_v8`". Rebuilding just
+          # this one crate costs about a minute and keeps the link path honest.
+          cargo clean --target "$RELEASE_TARGET" --release -p v8
+          # Select binaries by name only: upstream renames crates occasionally
+          # (windows-sandbox-rs is the `codex-windows-sandbox` package), and
+          # cargo resolves workspace binaries without the package name.
+          cargo build --target "$RELEASE_TARGET" --release \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-command-runner \
+            --bin codex-windows-sandbox-setup
+
+      - name: Smoke-test the build through the Git Bash launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="codex-rs/target/$RELEASE_TARGET/release"
+          for binary in codex codex-code-mode-host codex-command-runner codex-windows-sandbox-setup; do
+            test -f "$release_dir/$binary.exe"
+          done
+          "$release_dir/codex.exe" --version
+          # Exercise the packaged layout: launcher next to the renamed binary.
+          smoke_dir="$(mktemp -d)"
+          cp "$release_dir/codex.exe" "$smoke_dir/codex-gitbash.exe"
+          cp gitbash/codex-gitbash.sh "$smoke_dir/codex-gitbash.sh"
+          (
+            cd "$smoke_dir"
+            ./codex-gitbash.sh --version
+            ./codex-gitbash.sh --help > /dev/null
+          )
+          rm -rf "$smoke_dir"
+
+      - name: Package Git Bash launcher
+        env:
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          UPSTREAM_DATE: ${{ needs.sync.outputs.upstream_date }}
+          ARTIFACT_NAME: ${{ needs.sync.outputs.artifact_name }}
+          ARCHIVE_NAME: ${{ needs.sync.outputs.archive_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(pwd -P)"
+          release_dir="$workspace/codex-rs/target/$RELEASE_TARGET/release"
+          output_dir="$workspace/dist/$ARTIFACT_NAME"
+          archive="$workspace/dist/$ARCHIVE_NAME"
+
+          mkdir -p "$output_dir"
+          cp "$release_dir/codex.exe" "$output_dir/codex-gitbash.exe"
+          cp "$release_dir/codex-code-mode-host.exe" "$output_dir/codex-code-mode-host.exe"
+          cp "$release_dir/codex-command-runner.exe" "$output_dir/codex-command-runner.exe"
+          cp "$release_dir/codex-windows-sandbox-setup.exe" "$output_dir/codex-windows-sandbox-setup.exe"
+          cp gitbash/codex-gitbash.sh "$output_dir/codex-gitbash.sh"
+          cp gitbash/README-package.md "$output_dir/README-gitbash.md"
+          chmod 755 "$output_dir/codex-gitbash.sh"
+
+          cat > "$output_dir/BUILD-METADATA.txt" <<METADATA
+          patch_baseline_commit=$PATCH_BASE_SHA
+          upstream_main_commit=$UPSTREAM_SHA
+          upstream_main_date=$UPSTREAM_DATE
+          rebased_source_commit=$SOURCE_SHA_FULL
+          codex_version=$("$release_dir/codex.exe" --version | tr -d '\r')
+          rust_toolchain=$(rustc --version | tr -d '\r')
+          built_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          METADATA
+
+          (
+            cd "$output_dir"
+            sha256sum codex-gitbash.exe codex-code-mode-host.exe codex-command-runner.exe codex-windows-sandbox-setup.exe codex-gitbash.sh README-gitbash.md BUILD-METADATA.txt > SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+            7z a -tzip -bd -y "$(cygpath -w "$archive")" . > /dev/null
+          )
+          7z l "$(cygpath -w "$archive")"
+          ls -lh "$archive"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ needs.sync.outputs.artifact_name }}
+          path: dist/${{ needs.sync.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish GitHub release
+    needs: [sync, build]
+    if: ${{ needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Publication never touches checked-out source: this job only downloads
+    # the archive emitted by the build job.
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download packaged artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sync.outputs.artifact_name }}
+          path: release
+
+      - name: Create or update the release
+        env:
+          # A dedicated PAT is optional; the job token can publish releases too.
+          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.sync.outputs.tag }}
+          ARCHIVE: release/${{ needs.sync.outputs.archive_name }}
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+          SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+          SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          UPSTREAM_DATE: ${{ needs.sync.outputs.upstream_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ARCHIVE"
+          unzip -q -o "$ARCHIVE" -d verified-package
+          (cd verified-package && sha256sum -c SHA256SUMS.txt)
+          codex_version="$(sed -n 's/^codex_version=//p' verified-package/BUILD-METADATA.txt)"
+          title="Codex Git Bash for Windows $UPSTREAM_DATE ($SOURCE_SHA)"
+          notes="$(cat <<NOTES
+          Automated Codex Git Bash for Windows build.
+
+          > Unofficial downstream distribution based on OpenAI Codex. The included launcher selects Git for Windows Bash as the native Windows agent shell.
+
+          - Start from Git Bash: \`./codex-gitbash.sh\`
+          - Documentation: https://github.com/$GH_REPO#readme
+          - Upstream main: openai/codex@$UPSTREAM_SHA ($UPSTREAM_DATE)
+          - Binary reports: \`${codex_version:-unknown}\` (upstream source builds carry no release version)
+          - Rebased source: \`$SOURCE_SHA_FULL\`
+          - Patch baseline (tag target): \`$PATCH_BASE_SHA\`
+          - Full provenance and checksums: \`BUILD-METADATA.txt\` and \`SHA256SUMS.txt\` inside the archive
+          NOTES
+          )"
+          lookup_error="$(mktemp)"
+          trap 'rm -f "$lookup_error"' EXIT
+
+          if gh api --silent "repos/$GH_REPO/releases/tags/$TAG" > /dev/null 2>"$lookup_error"; then
+            gh release edit "$TAG" --title "$title" --notes "$notes" --prerelease=false --latest
+            gh release upload "$TAG" "$ARCHIVE" --clobber
+          else
+            lookup_status=$?
+            if ! grep -Eq 'HTTP 404|status 404' "$lookup_error"; then
+              cat "$lookup_error" >&2
+              exit "$lookup_status"
+            fi
+            gh release create "$TAG" "$ARCHIVE" \
+              --target "$PATCH_BASE_SHA" \
+              --title "$title" \
+              --notes "$notes" \
+              --latest
+          fi
+          echo "Published https://github.com/$GH_REPO/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  advance_main:
+    name: Advance fork main to released rebased source
+    needs: [sync, build, release]
+    if: >-
+      ${{
+        always() &&
+        needs.sync.result == 'success' &&
+        needs.sync.outputs.should_advance == 'true' &&
+        github.repository == 'zlinwzx147258/codex-gitbash' &&
+        github.ref == 'refs/heads/main' &&
+        (
+          needs.release.result == 'success' ||
+          (
+            needs.release.result == 'skipped' &&
+            needs.sync.outputs.should_build == 'false'
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Fresh checkout plus an explicit full-OID lease makes advancement a
+    # compare-and-swap. A concurrent main update is preserved; only transient
+    # workflow-validation push timeouts are retried with the same lease.
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Check out current fork main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Download rebased source bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sync.outputs.source_bundle_artifact }}
+          path: source-bundle
+
+      - name: Prepare exact rebased source
+        id: prepare
+        env:
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          SOURCE_BUNDLE_NAME: ${{ needs.sync.outputs.source_bundle_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_path="source-bundle/$SOURCE_BUNDLE_NAME"
+          test -f "$bundle_path"
+
+          current_main="$(git rev-parse refs/heads/main)"
+          if [[ "$current_main" == "$SOURCE_SHA_FULL" ]]; then
+            already_advanced=true
+          elif [[ "$current_main" == "$PATCH_BASE_SHA" ]]; then
+            already_advanced=false
+          else
+            echo "::error::Current main is $current_main; expected patch baseline $PATCH_BASE_SHA or source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+
+          git bundle verify "$bundle_path"
+          mapfile -t bundle_heads < <(git bundle list-heads "$bundle_path" refs/heads/main)
+          if [[ "${#bundle_heads[@]}" -ne 1 ]]; then
+            echo "::error::Source bundle must advertise exactly one main ref."
+            exit 1
+          fi
+          read -r bundled_source bundled_ref <<< "${bundle_heads[0]}"
+          if [[ "$bundled_ref" != "refs/heads/main" || "$bundled_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Source bundle advertises $bundled_source $bundled_ref, expected $SOURCE_SHA_FULL refs/heads/main."
+            exit 1
+          fi
+
+          git fetch --no-tags "$bundle_path" refs/heads/main
+          actual_source="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "$actual_source" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Fetched bundle source is $actual_source, expected $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$actual_source"; then
+            echo "::error::Upstream $UPSTREAM_SHA is not an ancestor of source $actual_source."
+            exit 1
+          fi
+
+          git checkout --detach "$actual_source"
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA_FULL" ]]; then
+            echo "::error::Detached checkout does not match expected source $SOURCE_SHA_FULL."
+            exit 1
+          fi
+          printf 'already_advanced=%s\n' "$already_advanced" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Fork main auto-advance"
+            echo
+            echo "- Current main: \`$current_main\`"
+            echo "- Verified rebased source: \`$SOURCE_SHA_FULL\`"
+            echo "- Already advanced (push is a no-op): \`$already_advanced\`"
+            echo "- Safety: full expected patch-baseline OID lease; transient push-validation timeouts retry, races stay rejected"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Advance main with exact compare-and-swap
+        if: ${{ steps.prepare.outputs.already_advanced != 'true' }}
+        env:
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+          SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          ADVANCE_PUSH_ATTEMPTS: "5"
+          ADVANCE_PUSH_RETRY_SECONDS: "15"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub intermittently rejects pushes that touch workflow files with a
+          # transient validation timeout even though the token has write access.
+          # The lease is an exact-OID compare-and-swap, so retrying is safe: every
+          # attempt revalidates the expected baseline, and a concurrent main
+          # update keeps being rejected instead of overwritten.
+          push_log="$(mktemp)"
+          trap 'rm -f "$push_log"' EXIT
+          attempts="${ADVANCE_PUSH_ATTEMPTS:-5}"
+          retry_seconds="${ADVANCE_PUSH_RETRY_SECONDS:-15}"
+          for attempt in $(seq 1 "$attempts"); do
+            if git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" origin "$SOURCE_SHA_FULL:refs/heads/main" >"$push_log" 2>&1; then
+              cat "$push_log"
+              exit 0
+            fi
+            echo "Advance push attempt $attempt failed. Remote output:"
+            cat "$push_log"
+            if [[ "$attempt" -eq "$attempts" ]]; then
+              echo "::error::Advance push rejected after $attempts attempts."
+              exit 1
+            fi
+            echo "Retrying in ${retry_seconds}s."
+            sleep "$retry_seconds"
+          done
+
+  report:
+    name: Report pipeline status
+    needs: [sync, build, release, advance_main]
+    if: ${{ always() && github.repository == 'zlinwzx147258/codex-gitbash' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SYNC_RESULT: ${{ needs.sync.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          ADVANCE_RESULT: ${{ needs.advance_main.result }}
+          REBASE_STATE: ${{ needs.sync.outputs.rebase_state }}
+          CONFLICTED_FILES: ${{ needs.sync.outputs.conflicted_files }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Automated Git Bash build is failing"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [[ "$(gh api "repos/$GH_REPO" --jq .has_issues)" != "true" ]]; then
+            echo "::warning::Issues are disabled for $GH_REPO; enable them in the repository settings to get failure tracking issues. Run: $run_url"
+            echo "Issues are disabled for this repository; no tracking issue was created." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          existing="$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)"
+
+          failed=()
+          for job in sync build release advance_main; do
+            case "$job" in
+              sync) result="$SYNC_RESULT" ;;
+              build) result="$BUILD_RESULT" ;;
+              release) result="$RELEASE_RESULT" ;;
+              advance_main) result="$ADVANCE_RESULT" ;;
+            esac
+            if [[ "$result" == failure || "$result" == cancelled ]]; then
+              failed+=("$job ($result)")
+            fi
+          done
+
+          if [[ "${#failed[@]}" -eq 0 ]]; then
+            if [[ -n "$existing" ]]; then
+              gh issue close "$existing" --comment "Resolved: $run_url succeeded (upstream openai/codex@${UPSTREAM_SHA:-unknown})."
+              echo "Closed tracking issue #$existing." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          if [[ "$REBASE_STATE" == conflict ]]; then
+            cause="The Git Bash patch no longer rebases cleanly onto upstream \`main\`. Rebase \`main\` by hand (see README, \"Keeping up with upstream\"), push it, then re-run the workflow."
+          else
+            cause="See the failed job logs."
+          fi
+          body="$(cat <<BODY
+          The scheduled **Build Codex Git Bash for Windows** pipeline failed.
+
+          - Run: $run_url
+          - Failed jobs: ${failed[*]}
+          - Patch baseline: \`${PATCH_BASE_SHA:-unknown}\`
+          - Upstream main: openai/codex@${UPSTREAM_SHA:-unknown}
+          - Rebase state: \`${REBASE_STATE:-unknown}\`
+
+          $cause
+          BODY
+          )"
+          if [[ -n "$CONFLICTED_FILES" ]]; then
+            body="$(printf '%s\n\nConflicting files:\n\n```\n%s\n```\n' "$body" "$CONFLICTED_FILES")"
+          fi
+          body="$(printf '%s\n\n_This issue is maintained automatically; it closes itself after the next successful run._\n' "$body")"
+
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+            echo "Updated tracking issue #$existing." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh issue create --title "$title" --body "$body"
+            echo "Opened a tracking issue." >> "$GITHUB_STEP_SUMMARY"
+          fi
