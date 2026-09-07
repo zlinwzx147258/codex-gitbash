@@ -1,3 +1,7 @@
+// Computing the layout of the app-server's instrumented `dispatch` async block
+// exceeds the default limit of 128; `codex-app-server` raises it for the same
+// reason.
+#![recursion_limit = "256"]
 // - In the default output mode, it is paramount that the only thing written to
 //   stdout is the final message (if any).
 // - In --json mode, stdout must be valid JSONL, one event per line.

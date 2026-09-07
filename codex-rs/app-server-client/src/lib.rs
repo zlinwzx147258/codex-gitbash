@@ -1,3 +1,7 @@
+// Computing the layout of the app-server's instrumented `dispatch` async block
+// exceeds the default limit of 128; `codex-app-server` raises it for the same
+// reason.
+#![recursion_limit = "256"]
 //! Shared in-process app-server client facade for CLI surfaces.
 //!
 //! This crate wraps [`codex_app_server::in_process`] behind a single async API

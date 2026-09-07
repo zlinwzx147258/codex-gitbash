@@ -1,3 +1,7 @@
+// Computing the layout of the app-server's instrumented `dispatch` async block
+// exceeds the default limit of 128; `codex-app-server` raises it for the same
+// reason.
+#![recursion_limit = "256"]
 //! Entry-point for the `codex-exec` binary.
 //!
 //! When this CLI is invoked normally, it parses the standard `codex-exec` CLI
