@@ -1,3 +1,7 @@
+// Computing the layout of the app-server's instrumented `dispatch` async block
+// exceeds the default limit of 128; `codex-app-server` raises it for the same
+// reason.
+#![recursion_limit = "256"]
 // Forbid accidental stdout/stderr writes in the *library* portion of the TUI.
 // The standalone `codex-tui` binary prints a short help message before the
 // alternate‑screen mode starts; that file opts‑out locally via `allow`.
