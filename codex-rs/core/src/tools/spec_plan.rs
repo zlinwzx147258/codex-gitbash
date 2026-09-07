@@ -4,6 +4,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::unified_image_budget_enabled;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::shell::ShellType;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
@@ -50,6 +51,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::shell_spec::WindowsShellKind;
 use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
@@ -1010,6 +1012,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                     include_windows_shell_guidance: should_include_windows_shell_guidance(
                         context.environments,
                     ),
+                    windows_shell_kind: windows_shell_kind(context.environments),
                 }));
                 registry.add(WriteStdinHandler);
             }
@@ -1075,6 +1078,27 @@ fn should_include_windows_shell_guidance(environments: &TurnEnvironmentSnapshot)
     }
 }
 
+/// Picks the Windows shell dialect that `exec_command` guidance describes.
+///
+/// Guidance must match the shell that will actually run the command, so this
+/// follows the single ready environment's resolved shell (Git Bash when
+/// `[windows].agent_shell = "git-bash"` selected it). Multi-environment turns
+/// and environments without a resolved shell keep the PowerShell wording.
+fn windows_shell_kind(environments: &TurnEnvironmentSnapshot) -> WindowsShellKind {
+    let mut environments = environments.turn_environments();
+    let Some(environment) = environments.next() else {
+        return WindowsShellKind::PowerShell;
+    };
+    if environments.next().is_some() {
+        return WindowsShellKind::PowerShell;
+    }
+
+    match environment.shell.as_ref().map(|shell| shell.shell_type) {
+        Some(ShellType::Bash) => WindowsShellKind::GitBash,
+        _ => WindowsShellKind::PowerShell,
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
@@ -1100,6 +1124,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
             context.environments,
         ),
         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
+        windows_shell_kind: windows_shell_kind(context.environments),
     };
     if features.enabled(Feature::UnifiedExec) {
         registry.add(ExecCommandHandler::new(options));
