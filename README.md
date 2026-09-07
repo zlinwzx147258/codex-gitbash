@@ -110,6 +110,16 @@ manually from the **Actions** tab:
    when the patch no longer rebases cleanly, and closes it after the next
    successful run. Nothing broken is ever published.
 
+### Repository setup the pipeline expects
+
+- **Issues enabled**, so the tracking issue can be filed.
+- A `GITBASH_RELEASE_TOKEN` secret holding a token with **Contents: write**
+  and **Workflows: write** (a classic PAT needs `repo` and `workflow`).
+  Publishing falls back to the built-in job token, but only a token with the
+  workflow permission may push a rebase that carries upstream's own
+  `.github/workflows` files, which is what step 4 does. Without it the release
+  is still published and only the `main` fast-forward is reported as failed.
+
 ## Build from source
 
 ```bash

@@ -412,11 +412,15 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
         )
         self.assertIn("runs-on: ubuntu-latest", job)
         self.assertIn("permissions: actions: read contents: write", compact)
-        self.assertNotIn("GITBASH_RELEASE_TOKEN", job)
+        # The release credential is needed to push upstream's workflow files,
+        # but only the checkout step may see it.
+        self.assertEqual(job.count("secrets.GITBASH_RELEASE_TOKEN"), 1)
         self.assertIn(f"uses: actions/checkout@{CHECKOUT_SHA}", job)
         self.assertIn("ref: main", job)
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn("token: ${{ github.token }}", job)
+        self.assertIn(
+            "token: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}", job
+        )
         self.assertIn(f"uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA}", job)
         self.assertIn("name: ${{ needs.sync.outputs.source_bundle_artifact }}", job)
 
@@ -426,6 +430,8 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
             "if: ${{ steps.prepare.outputs.already_advanced != 'true' }}", push_step
         )
         self.assertIn(EXPLICIT_LEASE_PUSH, push)
+        # A missing `workflow` permission is permanent; do not burn retries.
+        self.assertIn("refusing to allow", push)
         self.assertEqual(push.count("git push "), 1)
         self.assertIsNone(re.search(r"(?:^|\s)--force(?:\s|$)", push))
 

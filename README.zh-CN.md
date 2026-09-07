@@ -100,6 +100,15 @@ source ~/.bashrc
    *Automated Git Bash build is failing* 的 issue，补丁无法干净变基时会列出冲突
    文件；下次成功后自动关闭。坏掉的东西永远不会被发布。
 
+### 仓库需要的配置
+
+- **开启 Issues**，否则无法创建跟踪 issue。
+- 一个 `GITBASH_RELEASE_TOKEN` secret，令牌需要 **Contents: write** 和
+  **Workflows: write** 权限（classic PAT 则是 `repo` 和 `workflow`）。发布本身
+  可以退回到内置的 job token，但第 4 步推送的变基提交会带上游自己的
+  `.github/workflows` 文件，只有具备 workflow 权限的令牌才被允许推送。缺少它时
+  发行版照常发布，只有 `main` 快进这一步会被报告为失败。
+
 ## 从源码构建
 
 ```bash
