@@ -35,10 +35,11 @@ which is exactly what the shipped `codex-gitbash.sh` launcher does.
 - **Shell discovery** (`codex-rs/shell-command/src/shell_detect.rs`,
   `git_bash_shell`): Codex looks for `bash.exe` under a Git for Windows install
   root, trying in order the install that owns the first `git.exe` on `PATH`,
-  `%LocalAppData%\Programs\Git`, `%ProgramFiles%\Git`,
+  `%LocalAppData%\Programs\Git`, `%ProgramW6432%\Git`, `%ProgramFiles%\Git`,
   `%ProgramFiles(x86)%\Git`, then the fixed `C:\Program Files\Git` paths. A
-  root only counts if it contains `git.exe`, so WSL's `bash.exe` in
-  `System32` and Store app-execution aliases are never selected.
+  root only counts if it contains both a `git.exe` and a `bash.exe`, so WSL's
+  `bash.exe` in `System32`, Store app-execution aliases and the `mingw64`
+  subdirectory that holds the real `git.exe` are all rejected.
 - **Session shell** (`codex-rs/core/src/session/session.rs`): when the option
   is `git-bash`, the resolved Bash becomes the session's user shell. If no Git
   for Windows install is found, starting a session fails with
@@ -75,9 +76,12 @@ which is exactly what the shipped `codex-gitbash.sh` launcher does.
 cd codex-rs
 cargo test -p codex-shell-command                      # discovery helpers
 RUST_MIN_STACK=8388608 cargo test -p codex-core --lib -- \
-  shell_spec windows_agent_shell spec_plan_tests::exec_command_guidance
+  shell_spec windows_agent_shell exec_command_guidance
 python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
+
+In Git Bash on Windows, `python3` often resolves to the Microsoft Store stub
+that prints "Python was not found"; use `python` there.
 
 `tests/git_bash_discovery.rs` runs real discovery on the current machine. It
 reports what it found and passes when no Git for Windows install exists; set
@@ -86,6 +90,9 @@ reports what it found and passes when no Git for Windows install exists; set
 the default 2 MiB test stack in debug builds.
 
 CI covers the same ground: the **Git Bash fork checks** workflow lints the
-shell scripts, runs the workflow unit tests and the discovery tests on a
-Windows runner, and the release pipeline runs `codex-gitbash.sh --version`
+shell scripts, verifies formatting, runs the workflow unit tests, runs the
+discovery tests on a Windows runner and the `codex-core` tool-spec tests on
+Linux - where the guidance falls back to the host platform, so a Windows-only
+run would miss half the behaviour. The release pipeline then checks that the
+rebased tree still carries the patch and runs `codex-gitbash.sh --version`
 against the freshly built binary before anything is published.

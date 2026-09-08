@@ -545,7 +545,15 @@ async fn write_shell_snapshot(
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<Option<SnapshotCredentials>> {
     let shell_type = shell.shell_type;
-    if shell_type == ShellType::PowerShell || shell_type == ShellType::Cmd {
+    // Upstream only ever reaches this on Unix: on Windows the session shell was
+    // always PowerShell or cmd, so the bail below made the whole snapshot path
+    // dead code there. `windows.agent_shell = "git-bash"` makes the session
+    // shell Bash, which would revive it -- and `get_shell` re-resolves the
+    // interpreter with the generic `which("bash")` lookup rather than the
+    // hardened Git Bash discovery, so on a stock PATH it would spawn WSL's
+    // app-execution alias and boot a Linux VM. Keep Windows on the upstream
+    // behaviour of not snapshotting.
+    if cfg!(windows) || shell_type == ShellType::PowerShell || shell_type == ShellType::Cmd {
         bail!("Shell snapshot not supported yet for {shell_type:?}");
     }
     let (snapshot, credentials) = capture_snapshot(
