@@ -115,13 +115,26 @@ manually from the **Actions** tab:
 ### Repository setup the pipeline expects
 
 - **Issues enabled**, so the tracking issue can be filed.
-- A `GITBASH_RELEASE_TOKEN` secret holding a token with **Contents: write**
-  and **Workflows: write** (a classic PAT needs `repo` and `workflow`).
-  Publishing falls back to the built-in job token, but only a token with the
-  workflow permission may push a rebase that carries upstream's own
-  `.github/workflows` files, which is what step 4 does. Without that
-  permission everything is still built and published; the run summary just
-  notes that `main` was not fast-forwarded, and you can do it by hand:
+- A `GITBASH_DEPLOY_KEY` secret holding the **private half of a write-enabled
+  SSH deploy key**. Step 4 pushes a rebase that necessarily carries upstream's
+  own `.github/workflows` files, and GitHub rejects such a push from a token
+  that lacks the workflow permission — including the built-in job token, which
+  can never have it. A deploy key is exempt from that restriction, is scoped to
+  this one repository, and is what the pipeline prefers:
+
+  ```bash
+  ssh-keygen -t ed25519 -N "" -C "codex-gitbash advance_main" -f ./advance_key
+  gh repo deploy-key add ./advance_key.pub --title "advance-main CI" --allow-write
+  gh secret set GITBASH_DEPLOY_KEY < ./advance_key
+  rm -f ./advance_key ./advance_key.pub
+  ```
+
+- A `GITBASH_RELEASE_TOKEN` secret is optional: publishing falls back to the
+  built-in job token. Give it **Contents: write**, plus **Workflows: write** if
+  you would rather it, and not a deploy key, advance `main`.
+- With neither credential the pipeline still builds and publishes; the run
+  summary just notes that `main` was not fast-forwarded, which you can do by
+  hand:
 
   ```bash
   git fetch upstream main && git rebase upstream/main
