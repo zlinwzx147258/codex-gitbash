@@ -262,14 +262,26 @@ fn is_git_for_windows_root(git_root: &Path) -> bool {
 }
 
 #[cfg(windows)]
+fn root_owns_git_bash(git_root: &Path) -> bool {
+    git_bash_candidate_paths_for_root(git_root)
+        .iter()
+        .any(|candidate| file_exists(candidate).is_some())
+}
+
+#[cfg(windows)]
 fn git_root_for_executable(git_executable: &Path) -> Option<PathBuf> {
     git_executable
         .ancestors()
         .skip(1)
         // Git for Windows puts git.exe at most three levels below its install
-        // root: `cmd`, `bin`, or `mingw64\bin`.
+        // root: `cmd`, `bin`, or `mingw64\bin`. `<root>\mingw64` holds the real
+        // `bin\git.exe`, so it satisfies the root predicate on its own and would
+        // shadow `<root>` while owning no bash.exe at all. Requiring a Git Bash
+        // keeps the walk going until it reaches the actual install root, which
+        // matters because `mingw64\bin` is the PATH entry Git Bash exports and
+        // the one this fork's launcher prepends.
         .take(3)
-        .find(|candidate| is_git_for_windows_root(candidate))
+        .find(|candidate| is_git_for_windows_root(candidate) && root_owns_git_bash(candidate))
         .map(Path::to_path_buf)
 }
 
@@ -315,10 +327,11 @@ fn git_root_for_bash_executable(bash_executable: &Path) -> Option<PathBuf> {
 fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
     // Windows paths are case-insensitive; PATH and the environment variables
     // frequently spell the same install root differently.
-    if !paths
-        .iter()
-        .any(|existing| existing.as_os_str().eq_ignore_ascii_case(candidate.as_os_str()))
-    {
+    if !paths.iter().any(|existing| {
+        existing
+            .as_os_str()
+            .eq_ignore_ascii_case(candidate.as_os_str())
+    }) {
         paths.push(candidate);
     }
 }
@@ -521,6 +534,60 @@ mod tests {
         let candidates = git_bash_candidate_paths();
         assert!(candidates.contains(&PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")));
         assert!(candidates.contains(&PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe")));
+    }
+
+    #[cfg(windows)]
+    fn write_stub_tree(root: &Path, relative_paths: &[&str]) {
+        for relative in relative_paths {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("stub parent")).expect("create stub dirs");
+            std::fs::write(&path, b"").expect("write stub");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_root_for_executable_walks_past_the_mingw64_subtree() {
+        // `<root>\mingw64\bin\git.exe` is the real git binary, so `<root>\mingw64`
+        // looks like an install root while owning no bash.exe. The walk has to
+        // reach `<root>`, or a Git install outside the well-known directories is
+        // never found even though it is first on PATH.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("PortableGit");
+        write_stub_tree(
+            &root,
+            &[r"mingw64\bin\git.exe", r"bin\bash.exe", r"usr\bin\bash.exe"],
+        );
+
+        assert_eq!(
+            git_root_for_executable(&root.join(r"mingw64\bin\git.exe")),
+            Some(root)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_root_for_executable_accepts_the_cmd_shim() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("Git");
+        write_stub_tree(&root, &[r"cmd\git.exe", r"bin\bash.exe"]);
+
+        assert_eq!(
+            git_root_for_executable(&root.join(r"cmd\git.exe")),
+            Some(root)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_root_for_executable_rejects_a_root_without_git_bash() {
+        // A lone git.exe (scoop shim, a stripped install) must not be reported
+        // as a Git Bash root; discovery falls through to the next candidate.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("GitWithoutBash");
+        write_stub_tree(&root, &[r"cmd\git.exe"]);
+
+        assert_eq!(git_root_for_executable(&root.join(r"cmd\git.exe")), None);
     }
 
     #[cfg(windows)]
