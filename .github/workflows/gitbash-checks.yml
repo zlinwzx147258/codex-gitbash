@@ -49,18 +49,16 @@ jobs:
           resolved="$(awk '/^name = "v8"$/ { found = 1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' codex-rs/Cargo.lock)"
           test "$resolved" = "$expected"
 
-          # Pre-seeded files skip the download; only version resolution,
-          # checksum verification and the printed exports are exercised.
-          dir="$(mktemp -d)"
-          archive=rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.lib.gz
-          binding=src_binding_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.rs
-          printf 'placeholder' > "$dir/$archive"
-          printf 'placeholder' > "$dir/$binding"
-          (cd "$dir" && sha256sum "$archive" "$binding" > rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.sha256)
-          output="$(./gitbash/fetch-rusty-v8.sh x86_64-pc-windows-msvc "$dir")"
-          echo "$output"
-          grep -q "^export RUSTY_V8_ARCHIVE=" <<< "$output"
-          grep -q "^export RUSTY_V8_SRC_BINDING_PATH=" <<< "$output"
+          # The script anchors the release manifest to a checksum committed in
+          # third_party/v8, so a rebase that bumps the crate before that file
+          # lands would fail every build. Catch it here instead.
+          anchor="third_party/v8/rusty_v8_${resolved//./_}_release_manifests.sha256"
+          if [[ ! -f "$anchor" ]]; then
+            echo "::error::Cargo.lock pins v8 $resolved but $anchor is missing, so the prebuilt cannot be verified."
+            exit 1
+          fi
+          # Behaviour is covered hermetically by test_gitbash_fetch_rusty_v8.py,
+          # which serves its own release instead of reaching the network.
 
       - name: Run workflow unit tests
         run: python3 -m unittest discover -s .github/scripts -p 'test_gitbash_*.py' -v
@@ -118,7 +116,7 @@ jobs:
           RUST_MIN_STACK: "8388608"
         run: |
           set -euo pipefail
-          cargo test -p codex-core --lib --             exec_command_guidance windows_agent_shell shell_spec
+          cargo test -p codex-core --lib -- exec_command_guidance windows_agent_shell shell_spec
 
   launcher-windows:
     name: Launcher smoke test on Windows
