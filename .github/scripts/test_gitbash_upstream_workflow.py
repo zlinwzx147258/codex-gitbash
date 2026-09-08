@@ -429,7 +429,10 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
         self.assertIn("if: ${{ needs.build.result == 'success' }}", job)
         self.assertIn("runs-on: ubuntu-latest", job)
         self.assertIn("contents: write", job)
-        self.assertIn("GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}", job)
+        # Publishing uses the job token: a stored PAT can lapse or lose a
+        # permission and fail a build that already succeeded.
+        self.assertIn("GH_TOKEN: ${{ github.token }}", job)
+        self.assertNotIn("GITBASH_RELEASE_TOKEN", job)
         self.assertNotIn("actions/checkout", job)
         self.assertIn(f"uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA}", job)
 
@@ -586,7 +589,11 @@ class GitBashLauncherAssetsTest(unittest.TestCase):
             "shellcheck --severity=warning gitbash/codex-gitbash.sh gitbash/fetch-rusty-v8.sh",
             checks,
         )
-        self.assertIn("./gitbash/fetch-rusty-v8.sh x86_64-pc-windows-msvc", checks)
+        # The script verifies the release manifest against a checksum
+        # committed in third_party/v8, so CI checks that anchor exists for
+        # whatever version the lockfile pins after a rebase.
+        self.assertIn("_release_manifests.sha256", checks)
+        self.assertIn("::error::Cargo.lock pins v8", checks)
         self.assertIn(
             "python3 -m unittest discover -s .github/scripts -p 'test_gitbash_*.py'",
             checks,
