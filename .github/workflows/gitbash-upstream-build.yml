@@ -528,7 +528,8 @@ jobs:
     # Fresh checkout plus an explicit full-OID lease makes advancement a
     # compare-and-swap: a concurrent main update is preserved, never
     # overwritten. Pushing a rebase that carries upstream workflow files needs
-    # a credential with the `workflow` permission (see the checkout step).
+    # a credential GitHub exempts from the workflow-file restriction: an SSH
+    # deploy key (preferred) or a PAT holding the workflow permission.
     permissions:
       actions: read
       contents: write
@@ -539,11 +540,8 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          # Rebasing onto upstream inevitably carries upstream's own workflow
-          # files, and GitHub refuses pushes that touch `.github/workflows`
-          # unless the credential holds the `workflow` permission, which the
-          # ephemeral job token can never have. Use the release PAT when it is
-          # configured with that permission.
+          # This credential reads the branch, and pushes it only when no
+          # deploy key is configured; the push credential is chosen below.
           token: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}
 
       - name: Download rebased source bundle
@@ -614,11 +612,71 @@ jobs:
             echo "- Safety: full expected patch-baseline OID lease; a concurrent main update is rejected, never overwritten"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Choose the push credential
+        id: credential
+        if: ${{ steps.prepare.outputs.already_advanced != 'true' }}
+        env:
+          DEPLOY_KEY: ${{ secrets.GITBASH_DEPLOY_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub refuses any push that creates or updates a file under
+          # `.github/workflows` unless the credential is exempt, and rebasing
+          # onto upstream always carries upstream's own workflow files. An SSH
+          # deploy key is exempt; a PAT is exempt only with the `workflow`
+          # scope, and the ephemeral job token never is. So the deploy key is
+          # preferred whenever it is configured.
+          ssh_dir="$RUNNER_TEMP/advance-main-ssh"
+          if [[ -z "${DEPLOY_KEY:-}" ]]; then
+            {
+              printf 'mode=token\n'
+              printf 'remote=origin\n'
+            } >> "$GITHUB_OUTPUT"
+            echo "No GITBASH_DEPLOY_KEY secret is configured; pushing over HTTPS with the checkout token."
+            exit 0
+          fi
+
+          rm -rf "$ssh_dir"
+          mkdir -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          key_file="$ssh_dir/deploy_key"
+          # OpenSSH rejects a key whose trailing newline was lost in transit,
+          # so it is written back explicitly.
+          printf '%s\n' "$DEPLOY_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          if ! ssh-keygen -y -f "$key_file" > /dev/null 2>&1; then
+            echo "::error::GITBASH_DEPLOY_KEY is not a usable OpenSSH private key. Store the private half of a write-enabled deploy key, including its BEGIN and END lines."
+            exit 1
+          fi
+
+          # Host keys come from GitHub's own metadata over TLS, so the push
+          # authenticates the host rather than trusting it on first contact.
+          # A fetch failure must not fail a run whose release already shipped.
+          known_hosts="$ssh_dir/known_hosts"
+          if curl -fsS --retry 3 --retry-delay 2 "${GITHUB_META_URL:-https://api.github.com/meta}" \
+            | python3 -c 'import json,sys; sys.stdout.write("".join("github.com %s\n" % k for k in json.load(sys.stdin)["ssh_keys"]))' \
+            > "$known_hosts" && [[ -s "$known_hosts" ]]; then
+            host_checking="-o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          else
+            echo "::notice::Could not fetch GitHub's published SSH host keys; falling back to trust-on-first-use."
+            host_checking="-o StrictHostKeyChecking=accept-new"
+          fi
+
+          {
+            printf 'mode=deploy-key\n'
+            printf 'remote=git@github.com:%s.git\n' "$GITHUB_REPOSITORY"
+          } >> "$GITHUB_OUTPUT"
+          printf 'GIT_SSH_COMMAND=ssh -i %s -o IdentitiesOnly=yes %s\n' \
+            "$key_file" "$host_checking" >> "$GITHUB_ENV"
+          echo "Pushing with the GITBASH_DEPLOY_KEY deploy key, which GitHub exempts from the workflow-file restriction."
+
       - name: Advance main with exact compare-and-swap
         if: ${{ steps.prepare.outputs.already_advanced != 'true' }}
         env:
           PATCH_BASE_SHA: ${{ needs.sync.outputs.patch_base_sha }}
           SOURCE_SHA_FULL: ${{ needs.sync.outputs.source_sha_full }}
+          PUSH_REMOTE: ${{ steps.credential.outputs.remote }}
+          CREDENTIAL_MODE: ${{ steps.credential.outputs.mode }}
           ADVANCE_PUSH_ATTEMPTS: "5"
           ADVANCE_PUSH_RETRY_SECONDS: "15"
         shell: bash
@@ -633,8 +691,10 @@ jobs:
           trap 'rm -f "$push_log"' EXIT
           attempts="${ADVANCE_PUSH_ATTEMPTS:-5}"
           retry_seconds="${ADVANCE_PUSH_RETRY_SECONDS:-15}"
+          push_remote="${PUSH_REMOTE:-origin}"
+          echo "Pushing to $push_remote using the ${CREDENTIAL_MODE:-token} credential."
           for attempt in $(seq 1 "$attempts"); do
-            if git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" origin "$SOURCE_SHA_FULL:refs/heads/main" >"$push_log" 2>&1; then
+            if git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" "$push_remote" "$SOURCE_SHA_FULL:refs/heads/main" >"$push_log" 2>&1; then
               cat "$push_log"
               exit 0
             fi
@@ -644,16 +704,17 @@ jobs:
               # Nothing published is affected and the next run rebases from the
               # unchanged baseline, so this is reported without failing the
               # pipeline. Granting the permission turns the fast-forward on.
-              echo "::warning::Skipped the main fast-forward: the credential may not update .github/workflows. Give the GITBASH_RELEASE_TOKEN secret the Workflows: write permission (fine-grained PAT) or the workflow scope (classic PAT)."
+              echo "::warning::Skipped the main fast-forward: the credential may not update .github/workflows. Add the private half of a write-enabled SSH deploy key as the GITBASH_DEPLOY_KEY secret, or give GITBASH_RELEASE_TOKEN the Workflows: write permission (fine-grained PAT) or the workflow scope (classic PAT)."
               {
                 echo
                 echo "> [!NOTE]"
                 echo "> The release was published, but \`main\` was **not** fast-forwarded to"
                 echo "> \`$SOURCE_SHA_FULL\`. Pushing a rebase that carries upstream's"
-                echo "> \`.github/workflows\` files needs a credential with the workflow"
-                echo "> permission. Grant \`GITBASH_RELEASE_TOKEN\` **Workflows: write**"
-                echo "> (fine-grained PAT) or the \`workflow\` scope (classic PAT), or"
-                echo "> fast-forward main by hand."
+                echo "> \`.github/workflows\` files needs a credential GitHub exempts"
+                echo "> from that restriction. Add a write-enabled SSH deploy key as the"
+                echo "> \`GITBASH_DEPLOY_KEY\` secret (preferred), or grant"
+                echo "> \`GITBASH_RELEASE_TOKEN\` **Workflows: write** (fine-grained PAT)"
+                echo "> or the \`workflow\` scope (classic PAT), or fast-forward by hand."
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
@@ -664,6 +725,11 @@ jobs:
             echo "Retrying in ${retry_seconds}s."
             sleep "$retry_seconds"
           done
+
+      - name: Remove the deploy key from the runner
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/advance-main-ssh"
 
   report:
     name: Report pipeline status
