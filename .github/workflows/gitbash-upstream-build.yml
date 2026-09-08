@@ -471,8 +471,11 @@ jobs:
 
       - name: Create or update the release
         env:
-          # A dedicated PAT is optional; the job token can publish releases too.
-          GH_TOKEN: ${{ secrets.GITBASH_RELEASE_TOKEN || github.token }}
+          # Publish with the job token: it always exists, cannot expire, and
+          # `contents: write` above is all a release needs. A stored PAT can
+          # silently lose the permission or lapse, which fails a build that
+          # already succeeded.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.sync.outputs.tag }}
           ARCHIVE: release/${{ needs.sync.outputs.archive_name }}
