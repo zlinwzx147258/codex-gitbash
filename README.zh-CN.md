@@ -78,6 +78,7 @@ source ~/.bashrc
 | `codex-command-runner.exe`        | Windows 沙箱辅助程序                                    |
 | `codex-windows-sandbox-setup.exe` | Windows 沙箱辅助程序                                    |
 | `BUILD-METADATA.txt`              | Codex 版本、上游提交、变基后的源码提交                  |
+| `README-gitbash.md`               | 压缩包内的快速上手说明                                 |
 | `SHA256SUMS.txt`                  | 校验和，可用 `sha256sum -c SHA256SUMS.txt` 验证         |
 
 ## 自动化流程
@@ -153,9 +154,12 @@ Code Mode，在构建命令后追加
 ```bash
 cd codex-rs
 cargo test -p codex-shell-command
-RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell spec_plan_tests::exec_command_guidance
+RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell exec_command_guidance
 python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
+
+在 Windows 的 Git Bash 里，`python3` 常常指向 Microsoft Store 的占位程序（提示
+"Python was not found"），这时请改用 `python`。
 
 ## 手动跟进上游
 
@@ -181,6 +185,7 @@ git push --force-with-lease origin main
 | `codex-rs/core/src/session/session.rs`                            | 配置为 git-bash 时用它作为会话 shell                    |
 | `codex-rs/core/src/tools/…/shell_spec.rs`、`spec_plan.rs`         | `exec_command` 工具说明与安全规则的 Git Bash 版本      |
 | `gitbash/`                                                        | 启动器、包内说明以及源码构建辅助脚本 `fetch-rusty-v8.sh` |
+| `codex-rs/{tui,exec,cli,cloud-tasks,app-server-client}` 的 crate 根 | `#![recursion_limit = "256"]`，否则上游带插桩的 app-server 布局在 Windows 上编译不过 |
 | `.github/workflows/gitbash-*.yml`、`.github/scripts/test_gitbash_*.py` | 每日变基、编译、发布、issue 跟踪的自动化及其测试   |
 
 配置项本身的说明见 [docs/git-bash.md](docs/git-bash.md)。
