@@ -7,10 +7,12 @@ needed). The fixture tests execute the workflow's own shell blocks against
 throwaway git repositories so the bundle/advance logic is verified for real.
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
 import unittest
 from pathlib import Path
@@ -26,9 +28,19 @@ DOWNLOAD_ARTIFACT_SHA = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ARTIFACT_SHA = "bbbca2ddaa5d8feaa63e36b76fdaad77386f024f"
 EXPLICIT_LEASE_PUSH = (
     'git push --force-with-lease="refs/heads/main:$PATCH_BASE_SHA" '
-    'origin "$SOURCE_SHA_FULL:refs/heads/main"'
+    '"$push_remote" "$SOURCE_SHA_FULL:refs/heads/main"'
 )
 JOB_NAMES = ("sync", "build", "release", "advance_main", "report")
+
+
+def parse_key_values(path: Path) -> dict[str, str]:
+    """Read the `name=value` files an Actions step appends to."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            name, value = line.split("=", 1)
+            values[name] = value
+    return values
 
 
 def indentation(line: str) -> int:
@@ -446,6 +458,11 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
             "if: ${{ steps.prepare.outputs.already_advanced != 'true' }}", push_step
         )
         self.assertIn(EXPLICIT_LEASE_PUSH, push)
+        # The remote is whatever the credential step chose, never hardcoded.
+        self.assertIn(
+            "PUSH_REMOTE: ${{ steps.credential.outputs.remote }}", push_step
+        )
+        self.assertNotRegex(push, r"git push[^\n]*\borigin\b")
         # A missing `workflow` permission is permanent, so it must not burn
         # retries, and it must not fail a pipeline that published fine.
         self.assertIn("refusing to allow", push)
@@ -458,6 +475,37 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", prepare)
         self.assertNotRegex(prepare, r"(?:^|\s)(?:\./)?\.github/")
         self.assertNotRegex(prepare, r"(?:^|\s)(?:python|just)(?:\s|$)")
+
+    def test_advance_prefers_a_deploy_key_and_wipes_it_afterwards(self) -> None:
+        job = self.jobs["advance_main"]
+        credential_step = self.steps["advance_main"]["Choose the push credential"]
+        credential = self.run_blocks["advance_main"]["Choose the push credential"]
+
+        # Only the credential step may see the key, and it must never be
+        # echoed, only written to a private file the runner later wipes.
+        self.assertEqual(job.count("secrets.GITBASH_DEPLOY_KEY"), 1)
+        self.assertIn("DEPLOY_KEY: ${{ secrets.GITBASH_DEPLOY_KEY }}", credential_step)
+        # No push, no key on disk: the credential shares the push gate.
+        self.assertIn(
+            "if: ${{ steps.prepare.outputs.already_advanced != 'true' }}",
+            credential_step,
+        )
+        self.assertIn('chmod 600 "$key_file"', credential)
+        self.assertNotRegex(credential, r'echo[^\n]*\$\{?DEPLOY_KEY')
+        # A deploy key is exempt from the workflow-file push restriction, so
+        # it is preferred; the token remote stays as the fallback.
+        self.assertIn("remote=git@github.com:%s.git", credential)
+        self.assertIn("printf 'remote=origin", credential)
+        self.assertIn("ssh-keygen -y -f", credential)
+        self.assertIn("StrictHostKeyChecking=yes", credential)
+        self.assertIn(
+            'rm -rf "$RUNNER_TEMP/advance-main-ssh"',
+            self.steps["advance_main"]["Remove the deploy key from the runner"],
+        )
+        self.assertIn(
+            "if: ${{ always() }}",
+            self.steps["advance_main"]["Remove the deploy key from the runner"],
+        )
 
     def test_report_job_tracks_failures_in_an_issue(self) -> None:
         job = self.jobs["report"]
@@ -667,6 +715,147 @@ class GitBashUpstreamWorkflowFixtureTest(unittest.TestCase):
             self.assertNotEqual(prepare.returncode, 0)
             self.assertEqual(fixture.remote_main(), fixture.patch_base_sha)
 
+    def test_push_uses_the_remote_the_credential_step_chose(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            fixture = GitRepositoryFixture(Path(temp_dir))
+            self.run_bundle_block(fixture)
+            advance = fixture.clone_for_advance()
+            prepare = self.run_prepare_block(fixture, advance)
+            self.assertEqual(prepare.returncode, 0, prepare.stderr)
+
+            # A deploy key push targets an explicit URL rather than `origin`,
+            # so the remote has to come from the credential step. Pointing it
+            # at the bare repository by path proves the indirection is live.
+            push = self.run_push_block(
+                fixture, advance, push_remote=str(fixture.remote)
+            )
+
+            self.assertEqual(push.returncode, 0, push.stdout + push.stderr)
+            self.assertEqual(fixture.remote_main(), fixture.source_sha)
+
+    def test_credential_step_falls_back_to_the_token_remote(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            work = Path(temp_dir)
+            result, outputs, _ = self.run_credential_block(work, deploy_key="")
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(outputs["mode"], "token")
+            self.assertEqual(outputs["remote"], "origin")
+
+    def test_credential_step_prefers_a_configured_deploy_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            work = Path(temp_dir)
+            private_key = self.generate_ssh_key(work)
+            result, outputs, environment = self.run_credential_block(
+                work, deploy_key=private_key
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(outputs["mode"], "deploy-key")
+            self.assertEqual(
+                outputs["remote"], "git@github.com:zlinwzx147258/codex-gitbash.git"
+            )
+            ssh_command = environment["GIT_SSH_COMMAND"]
+            self.assertIn("-o IdentitiesOnly=yes", ssh_command)
+            # Host keys were served, so the push must verify them rather than
+            # trusting the host on first contact.
+            self.assertIn("-o StrictHostKeyChecking=yes", ssh_command)
+            self.assertIn("-o UserKnownHostsFile=", ssh_command)
+
+            key_file = work / "runner-temp" / "advance-main-ssh" / "deploy_key"
+            self.assertTrue(key_file.is_file())
+            if os.name == "posix":
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+            known_hosts = work / "runner-temp" / "advance-main-ssh" / "known_hosts"
+            self.assertIn("github.com ssh-ed25519 AAAAC3NzaC1", known_hosts.read_text())
+
+            # The key belongs in that file and nowhere else.
+            secret_body = private_key.splitlines()[1]
+            self.assertNotIn(secret_body, result.stdout)
+            self.assertNotIn(secret_body, result.stderr)
+
+    def test_credential_step_rejects_an_unusable_deploy_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            work = Path(temp_dir)
+            result, _, _ = self.run_credential_block(
+                work, deploy_key="not actually a private key"
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "::error::GITBASH_DEPLOY_KEY is not a usable OpenSSH private key",
+                result.stdout,
+            )
+
+    def generate_ssh_key(self, work: Path) -> str:
+        key_path = work / "generated_key"
+        subprocess.run(
+            [
+                "ssh-keygen", "-t", "ed25519", "-N", "", "-q",
+                "-C", "test", "-f", str(key_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        private_key = key_path.read_text(encoding="utf-8")
+        key_path.unlink()
+        (work / "generated_key.pub").unlink()
+        return private_key
+
+    def run_credential_block(
+        self,
+        work: Path,
+        deploy_key: str,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], dict[str, str]]:
+        runner_temp = work / "runner-temp"
+        runner_temp.mkdir(exist_ok=True)
+        output_file = work / "github-output.txt"
+        env_file = work / "github-env.txt"
+        output_file.touch()
+        env_file.touch()
+
+        # GitHub's host keys are served over TLS in production; a local copy
+        # keeps the test hermetic while still exercising the parsing.
+        meta = work / "meta.json"
+        meta.write_text(
+            json.dumps(
+                {
+                    "ssh_keys": [
+                        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+                        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNGmlwSvq6VB7hMwWNU/Aa4=",
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # `python3` resolves to a Microsoft Store stub on some Windows hosts,
+        # so the block is given the interpreter running the tests.
+        shim_dir = work / "shim"
+        shim_dir.mkdir(exist_ok=True)
+        shim = shim_dir / "python3"
+        shim.write_text(
+            '#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"),
+            encoding="utf-8",
+            newline="\n",
+        )
+        shim.chmod(0o755)
+
+        result = self.run_shell(
+            self.advance_blocks["Choose the push credential"],
+            work,
+            {
+                "DEPLOY_KEY": deploy_key,
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_REPOSITORY": "zlinwzx147258/codex-gitbash",
+                "GITHUB_OUTPUT": str(output_file),
+                "GITHUB_ENV": str(env_file),
+                "GITHUB_META_URL": meta.as_uri(),
+                "PATH": str(shim_dir) + os.pathsep + os.environ["PATH"],
+            },
+        )
+        return result, parse_key_values(output_file), parse_key_values(env_file)
+
     def run_bundle_block(self, fixture: GitRepositoryFixture) -> None:
         result = self.run_shell(
             self.sync_blocks["Create and verify rebased source bundle"],
@@ -723,6 +912,7 @@ class GitBashUpstreamWorkflowFixtureTest(unittest.TestCase):
         self,
         fixture: GitRepositoryFixture,
         checkout: Path,
+        push_remote: str = "origin",
     ) -> subprocess.CompletedProcess[str]:
         return self.run_shell(
             self.advance_blocks["Advance main with exact compare-and-swap"],
@@ -730,6 +920,7 @@ class GitBashUpstreamWorkflowFixtureTest(unittest.TestCase):
             {
                 "PATCH_BASE_SHA": fixture.patch_base_sha,
                 "SOURCE_SHA_FULL": fixture.source_sha,
+                "PUSH_REMOTE": push_remote,
                 "ADVANCE_PUSH_ATTEMPTS": "1",
                 "ADVANCE_PUSH_RETRY_SECONDS": "0",
                 "GITHUB_STEP_SUMMARY": "summary.md",
