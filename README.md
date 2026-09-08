@@ -84,6 +84,7 @@ Notes:
 | `codex-command-runner.exe`        | Windows sandbox helper, resolved next to the CLI              |
 | `codex-windows-sandbox-setup.exe` | Windows sandbox helper, resolved next to the CLI              |
 | `BUILD-METADATA.txt`              | Codex version, upstream commit, rebased source commit         |
+| `README-gitbash.md`               | Quick start for the archive                                   |
 | `SHA256SUMS.txt`                  | Checksums; verify with `sha256sum -c SHA256SUMS.txt`          |
 
 ## How the automation works
@@ -170,9 +171,12 @@ Run the fork's tests with:
 ```bash
 cd codex-rs
 cargo test -p codex-shell-command
-RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell spec_plan_tests::exec_command_guidance
+RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell exec_command_guidance
 python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
+
+In Git Bash on Windows, `python3` often resolves to the Microsoft Store stub
+that prints "Python was not found"; use `python` there.
 
 ## Keeping up with upstream by hand
 
@@ -199,6 +203,7 @@ conflicts stay small.
 | `codex-rs/core/src/session/session.rs`                            | Selects Git Bash as the session shell when configured             |
 | `codex-rs/core/src/tools/…/shell_spec.rs`, `spec_plan.rs`         | Git Bash variant of the `exec_command` description and safety rules |
 | `gitbash/`                                                        | Launcher, package README and the `fetch-rusty-v8.sh` build helper |
+| `codex-rs/{tui,exec,cli,cloud-tasks,app-server-client}` roots      | `#![recursion_limit = "256"]`, without which upstream's instrumented app-server layouts fail to compile on Windows |
 | `.github/workflows/gitbash-*.yml`, `.github/scripts/test_gitbash_*.py` | Daily rebase, build, release and tracking-issue automation with tests |
 
 Documentation for the option itself lives in [docs/git-bash.md](docs/git-bash.md).
