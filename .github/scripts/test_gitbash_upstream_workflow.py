@@ -273,6 +273,19 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
             re.compile(r'if \[\[ "\$rebase_state" == conflict \]\]; then.*?exit 1', re.S),
         )
 
+    def test_sync_refuses_to_publish_a_tree_that_lost_the_patch(self) -> None:
+        rebase = self.run_blocks["sync"]["Rebase the patch onto openai/codex main"]
+
+        # `git rebase` silently drops a commit whose change upstream has landed
+        # independently, which would publish stock Codex under the fork's name.
+        self.assertIn("WindowsAgentShellToml", rebase)
+        self.assertIn("fn git_bash_shell", rebase)
+        self.assertIn("Windows safety rules (Git Bash)", rebase)
+        self.assertIn('test -x gitbash/codex-gitbash.sh', rebase)
+        self.assertIn(
+            "::error::The rebased tree no longer carries the Git Bash patch", rebase
+        )
+
     def test_sync_dedupes_by_source_archive_across_paginated_releases(self) -> None:
         step = self.steps["sync"]["Rebase the patch onto openai/codex main"]
         sync = self.run_blocks["sync"]["Rebase the patch onto openai/codex main"]
@@ -403,6 +416,12 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
             self.assertIn(key, package)
 
     def test_release_publishes_verified_archive_as_latest(self) -> None:
+        release = self.run_blocks["release"]["Create or update the release"]
+        # A downloader has nothing to check the archive against unless its
+        # digest is published outside the archive.
+        self.assertIn('archive_sha256="$(sha256sum "$ARCHIVE"', release)
+        self.assertIn("Archive SHA-256:", release)
+
         job = self.jobs["release"]
         release = self.run_blocks["release"]["Create or update the release"]
 
@@ -511,6 +530,9 @@ class GitBashUpstreamWorkflowStructureTest(unittest.TestCase):
         job = self.jobs["report"]
         report = self.run_blocks["report"]["Open, update or close the tracking issue"]
 
+        # A failed API call must not read as "issues are switched off".
+        self.assertIn("::error::Could not determine whether issues are enabled", report)
+
         self.assertIn("needs: [sync, build, release, advance_main]", job)
         self.assertIn("always()", job)
         self.assertIn("permissions:\n      issues: write", job)
@@ -554,6 +576,11 @@ class GitBashLauncherAssetsTest(unittest.TestCase):
 
     def test_checks_workflow_runs_tests_and_lints_launcher(self) -> None:
         checks = CHECKS_WORKFLOW_PATH.read_text(encoding="utf-8")
+        # Formatting and the platform-dependent guidance tests both broke
+        # invisibly before these jobs existed.
+        self.assertIn("cargo fmt -- --config imports_granularity=Item --check", checks)
+        self.assertIn("core-tests-linux:", checks)
+        self.assertIn("exec_command_guidance", checks)
         self.assertIn("permissions:\n  contents: read", checks)
         self.assertIn(
             "shellcheck --severity=warning gitbash/codex-gitbash.sh gitbash/fetch-rusty-v8.sh",
