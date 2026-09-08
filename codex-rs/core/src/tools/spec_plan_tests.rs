@@ -993,9 +993,13 @@ async fn exec_command_guidance_describes_the_environment_shell_on_windows() {
         let ToolSpec::Function(tool) = plan.visible_spec("exec_command") else {
             panic!("exec_command should be a function tool");
         };
-        assert!(
+        // With more than one turn environment upstream ignores the
+        // per-environment platform and falls back to the host, so the Windows
+        // guidance is only expected on a Windows runner.
+        assert_eq!(
             has_windows_shell_guidance(plan.visible_spec("exec_command")),
-            "Windows guidance should be present for shell {shell:?}"
+            !multiple_environments || cfg!(windows),
+            "unexpected Windows guidance for shell {shell:?} with multiple_environments={multiple_environments}"
         );
         assert_eq!(
             tool.description

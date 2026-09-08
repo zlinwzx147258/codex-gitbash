@@ -3,7 +3,10 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 fn windows_shell_guidance_description() -> String {
-    format!("\n\n{}", windows_shell_guidance(WindowsShellKind::PowerShell))
+    format!(
+        "\n\n{}",
+        windows_shell_guidance(WindowsShellKind::PowerShell)
+    )
 }
 
 fn has_parameter(tool: &ToolSpec, parameter_name: &str) -> bool {
