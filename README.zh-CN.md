@@ -104,11 +104,23 @@ source ~/.bashrc
 ### 仓库需要的配置
 
 - **开启 Issues**，否则无法创建跟踪 issue。
-- 一个 `GITBASH_RELEASE_TOKEN` secret，令牌需要 **Contents: write** 和
-  **Workflows: write** 权限（classic PAT 则是 `repo` 和 `workflow`）。发布本身
-  可以退回到内置的 job token，但第 4 步推送的变基提交会带上游自己的
-  `.github/workflows` 文件，只有具备 workflow 权限的令牌才被允许推送。缺少该权限
-  时构建和发布一切照常，只是运行摘要里会提示 `main` 没有快进，你也可以手动执行：
+- 一个 `GITBASH_DEPLOY_KEY` secret，内容是**具备写权限的 SSH deploy key 的私钥**。
+  第 4 步推送的变基提交必然带上游自己的 `.github/workflows` 文件，而 GitHub 会拒绝
+  由不具备 workflow 权限的令牌发起的这类推送——内置 job token 永远不可能有该权限。
+  deploy key 不受这条限制约束，且只对本仓库有效，因此是流水线首选的凭据：
+
+  ```bash
+  ssh-keygen -t ed25519 -N "" -C "codex-gitbash advance_main" -f ./advance_key
+  gh repo deploy-key add ./advance_key.pub --title "advance-main CI" --allow-write
+  gh secret set GITBASH_DEPLOY_KEY < ./advance_key
+  rm -f ./advance_key ./advance_key.pub
+  ```
+
+- `GITBASH_RELEASE_TOKEN` secret是可选的：发布可以退回到内置的 job token。给它
+  **Contents: write**；如果你宁愿用它而不是 deploy key 来快进 `main`，再加上
+  **Workflows: write**。
+- 两个凭据都没有时，构建和发布一切照常，只是运行摘要里会提示 `main` 没有快进，
+  你也可以手动执行：
 
   ```bash
   git fetch upstream main && git rebase upstream/main
