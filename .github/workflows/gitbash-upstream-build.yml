@@ -130,6 +130,24 @@ jobs:
             exit 1
           fi
 
+          # `git rebase` drops a commit whose change already exists upstream,
+          # and it does so without failing. Nothing downstream would notice,
+          # so the rebased tree is checked for the feature it exists to carry
+          # before it is allowed to become a release.
+          missing=()
+          grep -q 'WindowsAgentShellToml' codex-rs/config/src/types.rs \
+            || missing+=("config: WindowsAgentShellToml")
+          grep -q 'fn git_bash_shell' codex-rs/shell-command/src/shell_detect.rs \
+            || missing+=("shell-command: git_bash_shell")
+          grep -q 'Windows safety rules (Git Bash)' codex-rs/core/src/tools/handlers/shell_spec.rs \
+            || missing+=("core: Git Bash exec_command guidance")
+          test -x gitbash/codex-gitbash.sh \
+            || missing+=("gitbash/codex-gitbash.sh: executable launcher")
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error::The rebased tree no longer carries the Git Bash patch (${missing[*]}). Upstream may have landed an equivalent change, which makes the rebase drop the commit silently."
+            exit 1
+          fi
+
           source_sha_full="$(git rev-parse HEAD)"
           source_sha="${source_sha_full:0:12}"
           artifact_name="codex-gitbash-windows-x64-$source_sha"
@@ -470,6 +488,10 @@ jobs:
           unzip -q -o "$ARCHIVE" -d verified-package
           (cd verified-package && sha256sum -c SHA256SUMS.txt)
           codex_version="$(sed -n 's/^codex_version=//p' verified-package/BUILD-METADATA.txt)"
+          # SHA256SUMS.txt covers the files inside the archive, so it cannot
+          # attest the archive itself. Publish that digest in the notes, which
+          # only the release publisher can write.
+          archive_sha256="$(sha256sum "$ARCHIVE" | cut -d ' ' -f 1)"
           title="Codex Git Bash for Windows $UPSTREAM_DATE ($SOURCE_SHA)"
           notes="$(cat <<NOTES
           Automated Codex Git Bash for Windows build.
@@ -482,7 +504,8 @@ jobs:
           - Binary reports: \`${codex_version:-unknown}\` (upstream source builds carry no release version)
           - Rebased source: \`$SOURCE_SHA_FULL\`
           - Patch baseline (tag target): \`$PATCH_BASE_SHA\`
-          - Full provenance and checksums: \`BUILD-METADATA.txt\` and \`SHA256SUMS.txt\` inside the archive
+          - Archive SHA-256: \`$archive_sha256\`
+          - Full provenance and per-file checksums: \`BUILD-METADATA.txt\` and \`SHA256SUMS.txt\` inside the archive
           NOTES
           )"
           lookup_error="$(mktemp)"
@@ -758,7 +781,22 @@ jobs:
           set -euo pipefail
           title="Automated Git Bash build is failing"
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          if [[ "$(gh api "repos/$GH_REPO" --jq .has_issues)" != "true" ]]; then
+          # An unreachable API must not be mistaken for "issues are off",
+          # which would silently swallow the report of a failing pipeline.
+          has_issues=""
+          for attempt in 1 2 3; do
+            if has_issues="$(gh api "repos/$GH_REPO" --jq .has_issues)"; then
+              break
+            fi
+            has_issues=""
+            echo "Could not read repository settings (attempt $attempt)."
+            sleep 5
+          done
+          if [[ -z "$has_issues" ]]; then
+            echo "::error::Could not determine whether issues are enabled for $GH_REPO, so the pipeline status was not reported. Run: $run_url"
+            exit 1
+          fi
+          if [[ "$has_issues" != "true" ]]; then
             echo "::warning::Issues are disabled for $GH_REPO; enable them in the repository settings to get failure tracking issues. Run: $run_url"
             echo "Issues are disabled for this repository; no tracking issue was created." >> "$GITHUB_STEP_SUMMARY"
             exit 0
