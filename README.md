@@ -130,9 +130,10 @@ manually from the **Actions** tab:
   rm -f ./advance_key ./advance_key.pub
   ```
 
-- A `GITBASH_RELEASE_TOKEN` secret is optional: publishing falls back to the
-  built-in job token. Give it **Contents: write**, plus **Workflows: write** if
-  you would rather it, and not a deploy key, advance `main`.
+- A `GITBASH_RELEASE_TOKEN` secret is optional and only used as a fallback push
+  credential when no deploy key is configured; give it **Workflows: write** for
+  that to work. Publishing always uses the built-in job token, which cannot
+  expire or silently lose a permission.
 - With neither credential the pipeline still builds and publishes; the run
   summary just notes that `main` was not fast-forwarded, which you can do by
   hand:
@@ -171,7 +172,7 @@ Run the fork's tests with:
 ```bash
 cd codex-rs
 cargo test -p codex-shell-command
-RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell exec_command_guidance
+RUST_MIN_STACK=8388608 cargo test -p codex-core --lib -- shell_spec windows_agent_shell exec_command_guidance
 python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
 
