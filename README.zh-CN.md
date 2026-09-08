@@ -117,9 +117,9 @@ source ~/.bashrc
   rm -f ./advance_key ./advance_key.pub
   ```
 
-- `GITBASH_RELEASE_TOKEN` secret是可选的：发布可以退回到内置的 job token。给它
-  **Contents: write**；如果你宁愿用它而不是 deploy key 来快进 `main`，再加上
-  **Workflows: write**。
+- `GITBASH_RELEASE_TOKEN` secret 是可选的，只有在没有配置 deploy key 时才作为
+  推送凭据兜底，那时它需要 **Workflows: write**。发布一律使用内置的 job token，
+  它不会过期，也不会悄悄丢掉某项权限。
 - 两个凭据都没有时，构建和发布一切照常，只是运行摘要里会提示 `main` 没有快进，
   你也可以手动执行：
 
@@ -154,7 +154,7 @@ Code Mode，在构建命令后追加
 ```bash
 cd codex-rs
 cargo test -p codex-shell-command
-RUST_MIN_STACK=8388608 cargo test -p codex-core --lib --   shell_spec windows_agent_shell exec_command_guidance
+RUST_MIN_STACK=8388608 cargo test -p codex-core --lib -- shell_spec windows_agent_shell exec_command_guidance
 python3 -m unittest discover -s ../.github/scripts -p 'test_gitbash_*.py'
 ```
 
