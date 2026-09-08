@@ -65,6 +65,61 @@ jobs:
       - name: Run workflow unit tests
         run: python3 -m unittest discover -s .github/scripts -p 'test_gitbash_*.py' -v
 
+  formatting:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the fork
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The fork is rebased onto upstream daily and upstream's CI enforces
+      # formatting, so unformatted fork hunks would only surface there. Use the
+      # same invocation upstream does.
+      - name: cargo fmt --check
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup component add rustfmt
+          cargo fmt -- --config imports_granularity=Item --check
+
+  core-tests-linux:
+    name: Tool-spec tests on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the fork
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The exec_command guidance falls back to the host platform for
+      # multi-environment turns, so an assertion that is right on Windows can
+      # still be wrong everywhere else -- including upstream's own CI, which
+      # this fork is rebased onto every day.
+      - name: Set up the Codex-built V8 prebuilt
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Restore Cargo registry and dependency build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: codex-rs
+          prefix-key: gitbash-core-tests-v1
+
+      - name: Run the fork's tool-spec tests
+        working-directory: codex-rs
+        shell: bash
+        env:
+          # Some upstream codex-core tests overflow the default 2 MiB test
+          # stack in debug builds.
+          RUST_MIN_STACK: "8388608"
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --lib --             exec_command_guidance windows_agent_shell shell_spec
+
   launcher-windows:
     name: Launcher smoke test on Windows
     runs-on: windows-latest
