@@ -36,6 +36,11 @@ concurrency:
 env:
   UPSTREAM_REPOSITORY: openai/codex
   RELEASE_TARGET: x86_64-pc-windows-msvc
+  # Upstream vendors the `v8` crate as a git dependency whose
+  # `third_party/rust` submodule contains paths that exceed what cargo's
+  # libgit2 can check out on Windows. The Git CLI handles them; upstream sets
+  # the same variable in its own setup-ci action and release workflows.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   sync:
@@ -362,6 +367,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The Git CLI fetch (CARGO_NET_GIT_FETCH_WITH_CLI above) checks out
+          # the v8 dependency's submodule, whose paths also need long-path
+          # support on Windows.
+          git config --global core.longpaths true
           export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
           # The `v8` build script unpacks the prebuilt static library into its
           # output directory and emits a link path to it. Cache pruning can drop
