@@ -29,6 +29,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # Upstream vendors the `v8` crate as a git dependency whose submodule has
+  # paths cargo's libgit2 cannot check out on Windows; the Git CLI can, and
+  # upstream's own CI sets this same variable. Cargo resolves the whole
+  # workspace lockfile, so even v8-free crates like codex-shell-command hit
+  # the v8 source when the patch section is in play.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   workflow-tests:
     name: Workflow and launcher tests
@@ -189,4 +197,10 @@ jobs:
         shell: bash
         env:
           CODEX_REQUIRE_GIT_BASH: "1"
-        run: cargo test -p codex-shell-command -- --nocapture
+        run: |
+          set -euo pipefail
+          # The v8 git dependency's submodule needs long-path support when the
+          # Git CLI (see the workflow-level CARGO_NET_GIT_FETCH_WITH_CLI)
+          # checks it out on Windows.
+          git config --global core.longpaths true
+          cargo test -p codex-shell-command -- --nocapture
